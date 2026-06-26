@@ -1,0 +1,12 @@
+# Dependencias de Node
+node_modules/
+app/node_modules/
+
+# Logs y archivos temporales
+*.log
+.temp/
+tmp/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
