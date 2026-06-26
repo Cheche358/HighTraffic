@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./banner.png" width="800" alt="High Traffic Load Balancer Banner" />
+  <img src="./banner.png" width="800" alt="High Traffic Light Banner" />
 </p>
 
-<h1 align="center">🚀 High Traffic Load Balancer</h1>
+<h1 align="center">🚀 High Traffic Light</h1>
 
 <p align="center">
   Simulación de un problema real de producción y su resolución mediante escalado horizontal, procesamiento asíncrono y almacenamiento en caché de alta velocidad.
@@ -32,7 +32,7 @@ Durante picos de alta demanda (como Black Friday, venta de entradas o eventos ma
 
 ## ⚡ La Solución: Arquitectura Escalada y Desacoplada
 
-Este proyecto demuestra cómo solventar estos cuellos de botella mediante una arquitectura moderna y elástica de microservicios:
+Este proyecto trata de solventar estos cuellos de botella mediante una arquitectura moderna y elástica de microservicios:
 
 - **Balanceo Dinámico con Traefik**: Traefik escucha el socket de Docker para autodetectar nuevas réplicas en caliente, distribuyendo el tráfico web a través de un esquema Round-Robin.
 - **Stateless APIs (Express)**: Las réplicas del backend no almacenan estado en memoria local, lo que les permite crearse y destruirse dinámicamente de forma transparente para los clientes.
@@ -89,14 +89,37 @@ HighTraffic/
 
 ---
 
-## 🚀 Guía de Uso Rápido
+## 🚀 Guía de Uso Rápido (Despliegue con Docker Swarm)
 
-### 1. Iniciar el Clúster Escalado (10 Instancias)
+### 1. Iniciar el Clúster de Swarm y Desplegar la Pila
 
-Compila y levanta la infraestructura junto a 10 réplicas de la API de forma aislada:
+Sigue estos pasos en tu terminal para inicializar el clúster local y desplegar los servicios:
 
 ```bash
-docker compose up --build --scale api=10 -d
+# A) Inicializar Docker Swarm (solo se requiere hacer una vez)
+docker swarm init
+
+# B) Compilar la imagen local del backend
+docker compose build
+
+# C) Desplegar el stack en Swarm (Traefik, Redis, RabbitMQ y APIs)
+docker stack deploy -c docker-compose.yaml hightraffic
+```
+
+### 2. Escalar el Backend Dinámicamente
+
+Puedes modificar la cantidad de réplicas de la API en caliente sin reiniciar los demás servicios:
+
+```bash
+docker service scale hightraffic_api=10
+```
+
+### 3. Remover el clúster de servicios
+
+Para detener la pila y limpiar los contenedores:
+
+```bash
+docker stack rm hightraffic
 ```
 
 ### 2. Panel de Control y URLs Locales
@@ -123,3 +146,21 @@ k6 run stress.js
    El worker integrado consume la tarea desde RabbitMQ, realiza el procesamiento simulado de 2 segundos, y escribe el resultado final en Redis con un TTL de 10 segundos.
 3. **Cache Hit (200 OK)**:
    Las peticiones idénticas enviadas en el rango de los 10 segundos de la caché son capturadas por Redis y respondidas en milisegundos (`200 OK`), descargando de procesamiento al backend y a la cola.
+
+---
+
+## ⚖️ Docker Swarm vs Kubernetes: Decisiones de DevOps
+
+Esta arquitectura está diseñada para ser ágil y ligera (**"Light"**), utilizando **Docker Swarm**. A continuación se detalla la comparativa técnica para evaluar cuándo mantener este enfoque o migrar a Kubernetes:
+
+| Característica            | Enfoque "Light" (Docker Swarm)                                                  | Enfoque "Enterprise" (Kubernetes)                                                         |
+| :------------------------ | :------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------- |
+| **Complejidad Base**      | **Extremadamente Baja**. Curva de aprendizaje mínima para desarrolladores.      | **Alta**. Requiere un equipo o rol especializado de Platform / DevOps.                    |
+| **Uso de Recursos (RAM)** | **Mínimo (~50MB)**. No consume casi recursos del sistema en reposo.             | **Alto (~1.5GB a 2GB)** de consumo de base para el plano de control (Kubelet, API, etc.). |
+| **Escalado Dinámico**     | **Manual/Semimanual** (`docker service scale`).                                 | **Automático y Reactivo** (HPA basado en longitud de colas con KEDA).                     |
+| **Health Checks**         | **Básico** (Verifica el estado del servicio en el host).                        | **Avanzado** (Readiness/Liveness Probes, retira pods inestables de inmediato).            |
+| **Entornos**              | Excelente para servidores dedicados individuales o clústeres pequeños-medianos. | Estándar para nubes públicas multi-nodo con servicios gestionados (EKS, GKE, AKS).        |
+
+### Conclusión de Implementación
+
+El enfoque **High Traffic Light** con Docker Swarm es ideal para proyectos donde se busca el máximo rendimiento de hardware con el mínimo esfuerzo de administración. Si las demandas de tráfico se vuelven altamente volátiles y requieren autoscaling reactivo automático en la nube, se recomienda migrar el stack hacia Kubernetes.

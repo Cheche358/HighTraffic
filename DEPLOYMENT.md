@@ -206,3 +206,89 @@ Para visualizar la memoria RAM y CPU consumida por cada contenedor activo:
 ```bash
 docker stats
 ```
+
+---
+
+## ⚙️ 7. Orquestación Elástica con Docker Swarm
+
+Cuando se requiere desplegar la aplicación en producción distribuida (múltiples servidores físicos o máquinas virtuales) sin la alta complejidad de Kubernetes, **Docker Swarm** es la solución de orquestación nativa recomendada.
+
+### Diferencias Clave con Docker Compose Local
+
+1. **Ubicación de Labels**: En Docker Swarm, Traefik monitoriza las etiquetas declaradas exclusivamente bajo la sección `deploy.labels` del servicio en lugar del bloque `labels` raíz del contenedor.
+2. **Ubicación del Proxy (Placement Constraints)**: El contenedor de Traefik debe estar restringido al nodo **Manager** del clúster (`node.role == manager`) para tener los privilegios del socket del clúster Swarm.
+3. **Escalado Declarativo**: Las réplicas y políticas de despliegue se declaran en el bloque `deploy:` del servicio en lugar de usar parámetros en línea de comandos.
+
+### Plantilla Genérica compatible con Docker Swarm (`docker-compose.yml`)
+
+```yaml
+version: "3.8"
+
+services:
+  # Traefik (Debe ejecutarse en el Manager)
+  traefik:
+    image: traefik:v2.11
+    ports:
+      - "80:80"
+      - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  cache:
+    image: redis:7-alpine
+
+  # Aplicación Replicada
+  web-app:
+    image: tu-registro-privado.com/web-app:latest
+    environment:
+      - REDIS_URL=redis://cache:6379
+    deploy:
+      replicas: 5
+      update_config:
+        parallelism: 2
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.web-app.rule=PathPrefix(`/`)"
+        - "traefik.http.services.web-app.loadbalancer.server.port=3000"
+```
+
+### Comandos de Operación en Producción Swarm
+
+- **Inicializar el clúster (solo en el Manager inicial)**:
+
+  ```bash
+  docker swarm init
+  ```
+
+- **Unir otros servidores al clúster (Workers/Managers)**:
+
+  ```bash
+  docker swarm join --token <token_generado> <IP_del_Manager>:2377
+  ```
+
+- **Desplegar o Actualizar la Pila de Servicios (Stack)**:
+
+  ```bash
+  docker stack deploy -c docker-compose.yaml mi_proyecto
+  ```
+
+- **Escalar en caliente un Servicio**:
+
+  ```bash
+  docker service scale mi_proyecto_web-app=15
+  ```
+
+- **Monitorear los servicios del clúster**:
+
+  ```bash
+  docker service ls
+  docker service ps mi_proyecto_web-app
+  ```
