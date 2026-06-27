@@ -1,7 +1,9 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execSync, exec } = require("child_process");
+const util = require("util");
+const execPromise = util.promisify(exec);
 
 // ─── Configuración desde Variables de Entorno ───
 const PORT = parseInt(process.env.SCALER_PORT || "9099", 10);
@@ -141,18 +143,20 @@ function queryAlertmanager() {
   });
 }
 
-// Helper para obtener docker stats consolidado con IDs e imágenes
-function getDockerStats() {
+let cachedContainers = [];
+
+// Actualizar estadísticas de contenedores de forma asíncrona no bloqueante
+async function updateDockerStatsCache() {
   try {
-    // 1. Obtener ID e Imagen desde docker ps
-    const psOutput = execSync(
+    // 1. Obtener ID e Imagen desde docker ps (con timeout para no colgarse si la Docker API tarda)
+    const { stdout: psOutput } = await execPromise(
       `docker ps --no-trunc --format "{{.Names}}|{{.ID}}|{{.Image}}"`,
-      { encoding: "utf-8", timeout: 5000 }
-    ).trim();
+      { timeout: 5000 }
+    );
     
     const containerMap = {};
     if (psOutput) {
-      psOutput.split("\n").forEach(line => {
+      psOutput.trim().split("\n").forEach(line => {
         const parts = line.split("|");
         const names = parts[0];
         const id = parts[1];
@@ -169,14 +173,17 @@ function getDockerStats() {
     }
 
     // 2. Obtener CPU, Memoria y Red desde docker stats
-    const statsOutput = execSync(
+    const { stdout: statsOutput } = await execPromise(
       `docker stats --no-stream --format "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}"`,
-      { encoding: "utf-8", timeout: 8000 }
-    ).trim();
+      { timeout: 7000 }
+    );
 
-    if (!statsOutput) return [];
+    if (!statsOutput) {
+      cachedContainers = [];
+      return;
+    }
 
-    return statsOutput.split("\n").map(line => {
+    cachedContainers = statsOutput.trim().split("\n").map(line => {
       const parts = line.split("|");
       const name = parts[0] || "unknown";
       const info = containerMap[name] || { id: "unknown", fullId: "unknown", image: "unknown" };
@@ -191,10 +198,14 @@ function getDockerStats() {
       };
     }).filter(c => c.name.startsWith("hightraffic_"));
   } catch (err) {
-    console.error(`[ERROR] No se pudo obtener docker stats consolidado:`, err.message);
-    return [];
+    console.error(`[ERROR Cache Stats] Fallo al actualizar métricas:`, err.message);
   }
 }
+
+// Iniciar bucle de caché cada 5 segundos de forma asíncrona
+setInterval(updateDockerStatsCache, 5000);
+// Disparar la primera carga asíncrona
+updateDockerStatsCache();
 
 // ─── Obtener Réplicas Actuales ───
 function getCurrentReplicas() {
@@ -328,8 +339,8 @@ const server = http.createServer(async (req, res) => {
     // Convertir bytes a un formato legible (KB/s)
     const trafficKb = networkTraffic / 1024;
 
-    // Obtener las estadísticas locales de contenedores
-    const containers = getDockerStats();
+    // Obtener las estadísticas locales de contenedores desde la caché
+    const containers = cachedContainers;
 
     // Determinar estado de alerta del badge local
     const isAlertFiring = alertData.some(a => a.name === "APIOverloaded" && a.state === "firing");

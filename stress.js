@@ -28,9 +28,9 @@ export default function () {
     "status es 200 o 202": (r) => r.status === 200 || r.status === 202,
   });
 
-  // Delay microscópico (10ms) para evitar que Windows sature el pool de sockets locales por TCP port exhaust.
-  // Es lo suficientemente bajo para ser sumamente agresivo pero seguro para el kernel.
-  sleep(0.01);
+  // Delay de 80ms para proteger la tabla de sockets locales de Windows contra la saturación inmediata.
+  // Permite un flujo sumamente agresivo (~900+ RPS) sin colapsar la red del host local.
+  sleep(0.08);
 }
 
 
