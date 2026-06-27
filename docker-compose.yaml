@@ -106,6 +106,7 @@ services:
       - SCALE_COOLDOWN=${SCALE_COOLDOWN}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./autoscaler/data:/app/data
     deploy:
       placement:
         constraints:
@@ -113,5 +114,8 @@ services:
 
 networks:
   default:
-    name: ht_net
+    name: ht_net_v5
     driver: overlay
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

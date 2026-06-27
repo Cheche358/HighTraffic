@@ -90,18 +90,22 @@ async function startWorker() {
 // Ruta API principal
 app.get("/", async (req, res) => {
   try {
-    // 1. Intentar leer de la caché de Redis
-    const cachedData = await redisClient.get(CACHE_KEY);
-    if (cachedData) {
-      console.log(`[Server ${os.hostname()}] Cache HIT!`);
-      return res.status(200).json({
-        source: "cache",
-        data: JSON.parse(cachedData)
-      });
+    // 1. Intentar leer de la caché de Redis (a menos que el cliente fuerce un
+    //    miss con ?nocache=, útil para pruebas de carga con tráfico mixto).
+    const forceMiss = "nocache" in req.query;
+    if (!forceMiss) {
+      const cachedData = await redisClient.get(CACHE_KEY);
+      if (cachedData) {
+        console.log(`[Server ${os.hostname()}] Cache HIT!`);
+        return res.status(200).json({
+          source: "cache",
+          data: JSON.parse(cachedData)
+        });
+      }
     }
 
     // 2. Si no hay caché (Cache MISS), encolar la tarea
-    console.log(`[Server ${os.hostname()}] Cache MISS! Encolando tarea...`);
+    console.log(`[Server ${os.hostname()}] Cache MISS${forceMiss ? " (forzado por ?nocache)" : ""}! Encolando tarea...`);
     const taskPayload = {
       requestId: Math.random().toString(36).substring(7),
       requestedBy: os.hostname(),
