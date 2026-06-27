@@ -106,6 +106,7 @@ services:
       - SCALE_COOLDOWN=${SCALE_COOLDOWN}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./autoscaler/data:/app/data
     deploy:
       placement:
         constraints:
