@@ -4,8 +4,8 @@ import { check, sleep } from "k6";
 export const options = {
   discardResponseBodies: true,         // Evita almacenar en memoria local los cuerpos de respuesta (maximiza RPS del host)
   stages: [
-    { duration: "10s", target: 1000 },  // Rampa de subida rápida a 1500 VUs
-    { duration: "25s", target: 1000 },  // Sostener tráfico pesado para forzar el autoescalado
+    { duration: "10s", target: 1500 },  // Rampa de subida rápida a 1000 VUs
+    { duration: "25s", target: 1500 },  // Sostener tráfico pesado para forzar el autoescalado
     { duration: "10s", target: 0 },     // Rampa de bajada
   ],
   thresholds: {
@@ -14,14 +14,20 @@ export const options = {
 };
 
 export default function () {
-  // Evitamos Cache Hits de Traefik/Redis inyectando query params aleatorios (Cache Busting)
-  const url = `http://127.0.0.1/?nocache=${Math.random()}`;
-  
+  // Mezcla 50/50 de tráfico: la mitad de las peticiones llevan cache-busting
+  // (?nocache=) y la otra mitad van a la URL plana (/) que puede resolver
+  // desde caché. La selección es aleatoria por petición para simular tráfico
+  // realista de usuarios nuevos vs. recurrentes.
+  const makeUrl = () =>
+    Math.random() < 0.5
+      ? `http://127.0.0.1/?nocache=${Math.random()}`
+      : "http://127.0.0.1/";
+
   // Enviamos un lote de 2 peticiones concurrentes por iteración agrupadas bajo una métrica única (Root)
   // para evitar la advertencia de alta cardinalidad en el ingester de k6.
   const responses = http.batch([
-    { method: "GET", url: url, params: { tags: { name: "Root" } } },
-    { method: "GET", url: url, params: { tags: { name: "Root" } } }
+    { method: "GET", url: makeUrl(), params: { tags: { name: "Root" } } },
+    { method: "GET", url: makeUrl(), params: { tags: { name: "Root" } } }
   ]);
 
   // Validamos respuestas del batch

@@ -187,6 +187,11 @@
     let cooldownTimer = 0;
     let cooldownInterval = null;
 
+    // Flag para preservar el último render de contenedores ante respuestas
+    // transitoriamente vacías (carga alta / reinicio del autoscaler), evitando
+    // que la grilla parpadee con "sin contenedores" en cada poll.
+    let hasRenderedContainers = false;
+
     // Ejecutar cuenta regresiva visual del Cooldown en el cliente
     function startClientCooldown(secondsRemaining, totalSeconds) {
       cooldownTotal = totalSeconds || 120;
@@ -237,8 +242,13 @@
         const data = await response.json();
         
         // Actualizar Valores de Tarjetas
+        // data.cpu_usage viene de Telegraf en "% por núcleo" (puede dar >100%).
+        // Se normaliza a "% del host" (0-100%) dividiendo entre los núcleos,
+        // para que toda la UI use la misma escala veraz y coherente.
+        const cpuCoresHost = data.cpu_cores || 1;
+        const cpuUsageHost = Math.min(100, (data.cpu_usage || 0) / cpuCoresHost);
         document.getElementById('metrics-replicas').innerHTML = `${data.replicas} <span class="card-unit">/ ${data.max}</span>`;
-        document.getElementById('metrics-cpu').innerHTML = `${data.cpu_usage.toFixed(1)}<span class="card-unit">%</span>`;
+        document.getElementById('metrics-cpu').innerHTML = `${cpuUsageHost.toFixed(1)}<span class="card-unit">%</span>`;
         document.getElementById('metrics-traffic').innerHTML = `${data.traffic_rate_kb.toFixed(2)} <span class="card-unit">KB/s</span>`;
         
         // Actualizar Detalles de Configuración
@@ -351,6 +361,7 @@
         }
 
         if (Array.isArray(data.containers) && data.containers.length > 0) {
+          hasRenderedContainers = true;
           const apis = data.containers
             .filter(c => c.name.includes("hightraffic_api."))
             .sort((a, b) => {
@@ -366,7 +377,11 @@
           
           if (apis.length > 0) {
             apiCardsGrid.innerHTML = apis.map(c => {
-              const cpuPct = Math.min(100, parseFloat(c.cpu) || 0);
+              const cpuCores = data.cpu_cores || 1;
+              // docker stats reporta CPU como "% de un núcleo"; se normaliza al
+              // host (divide entre núcleos) para un 0-100% real y coherente con la barra.
+              const cpuHostPct = Math.min(100, (parseFloat(c.cpu) || 0) / cpuCores);
+              const cpuPct = cpuHostPct;
               const mem = parseMemory(c.memory);
               const memPct = Math.min(100, (mem.bytes / 134217728) * 100); // 128MB como límite visual
               const friendlyName = getFriendlyName(c.name);
@@ -386,7 +401,7 @@
                     <div class="replica-metric-row">
                       <div class="replica-metric-header">
                         <span>CPU</span>
-                        <span class="replica-metric-val">${c.cpu}</span>
+                        <span class="replica-metric-val">${cpuHostPct.toFixed(1)}%</span>
                       </div>
                       <div class="metric-bar-bg">
                         <div class="metric-bar-fill cpu" style="width: ${cpuPct}%"></div>
@@ -421,7 +436,11 @@
           
           if (system.length > 0) {
             systemCardsGrid.innerHTML = system.map(c => {
-              const cpuPct = Math.min(100, parseFloat(c.cpu) || 0);
+              const cpuCores = data.cpu_cores || 1;
+              // docker stats reporta CPU como "% de un núcleo"; se normaliza al
+              // host (divide entre núcleos) para un 0-100% real y coherente con la barra.
+              const cpuHostPct = Math.min(100, (parseFloat(c.cpu) || 0) / cpuCores);
+              const cpuPct = cpuHostPct;
               const mem = parseMemory(c.memory);
               
               let limit = 134217728; // 128MB
@@ -451,7 +470,7 @@
                     <div class="replica-metric-row">
                       <div class="replica-metric-header">
                         <span>CPU</span>
-                        <span class="replica-metric-val">${c.cpu}</span>
+                        <span class="replica-metric-val">${cpuHostPct.toFixed(1)}%</span>
                       </div>
                       <div class="metric-bar-bg">
                         <div class="metric-bar-fill cpu" style="width: ${cpuPct}%"></div>
@@ -484,8 +503,14 @@
             systemCardsGrid.innerHTML = `<div class="alert-empty">No hay módulos de sistema en ejecución</div>`;
           }
         } else {
-          apiCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
-          systemCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
+          // data.containers vacío: si ya habíamos renderizado contenedores,
+          // conservamos el último render válido (fallo transitorio por carga
+          // alta o reinicio del autoscaler) en lugar de limpiar la grilla y
+          // provocar el parpadeo de "sin contenedores".
+          if (!hasRenderedContainers) {
+            apiCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
+            systemCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
+          }
         }
 
         // ─── Renderizar Colas RabbitMQ ───
@@ -572,7 +597,7 @@
         }
 
         // Actualizar Histórico del Gráfico
-        cpuDataHistory.push(data.cpu_usage);
+        cpuDataHistory.push(cpuUsageHost);
         cpuDataHistory.shift();
         
         const now = new Date();

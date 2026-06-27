@@ -1,9 +1,15 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { execSync, exec } = require("child_process");
 const util = require("util");
 const execPromise = util.promisify(exec);
+
+// Núcleos lógicos visibles para el contenedor (= núcleos de la VM/host de Docker).
+// docker stats reporta CPU como "% de un solo núcleo", por lo que el frontend
+// divide entre este valor para mostrar el % real de uso del host (0-100%).
+const CPU_CORES = os.cpus().length || 1;
 
 const DB_PATH = path.join(__dirname, "data", "alerts-history.json");
 
@@ -156,6 +162,28 @@ function queryAlertmanager() {
 }
 
 let cachedContainers = [];
+let lastTraefikNetBytes = null;
+let lastTraefikNetTimestamp = null;
+let localTrafficRateKb = 0;
+
+// Helper para parsear strings de red a bytes totales (ej. "447.8MB / 15.6MB" -> bytes totales)
+function parseNetBytes(netStr) {
+  if (!netStr) return 0;
+  const parts = netStr.split("/");
+  if (parts.length < 2) return 0;
+  
+  function toBytes(str) {
+    const match = str.trim().match(/^([0-9.]+)\s*([a-zA-Z]*)$/);
+    if (!match) return 0;
+    const val = parseFloat(match[1]) || 0;
+    const unit = match[2].toUpperCase();
+    if (unit.startsWith("G")) return val * 1073741824;
+    if (unit.startsWith("M")) return val * 1048576;
+    if (unit.startsWith("K")) return val * 1024;
+    return val;
+  }
+  return toBytes(parts[0]) + toBytes(parts[1]);
+}
 
 // Actualizar estadísticas de contenedores de forma asíncrona no bloqueante
 async function updateDockerStatsCache() {
@@ -190,12 +218,12 @@ async function updateDockerStatsCache() {
       { timeout: 7000 }
     );
 
-    if (!statsOutput) {
-      cachedContainers = [];
+    if (!statsOutput || statsOutput.trim() === "") {
+      console.warn(`[WARN Cache Stats] docker stats devolvió una salida vacía, manteniendo la caché previa.`);
       return;
     }
 
-    cachedContainers = statsOutput.trim().split("\n").map(line => {
+    const processedContainers = statsOutput.trim().split("\n").map(line => {
       const parts = line.split("|");
       const name = parts[0] || "unknown";
       const info = containerMap[name] || { id: "unknown", fullId: "unknown", image: "unknown" };
@@ -209,6 +237,26 @@ async function updateDockerStatsCache() {
         net: parts[3] || "0.00B / 0.00B"
       };
     }).filter(c => c.name.startsWith("hightraffic_"));
+
+    if (processedContainers.length > 0) {
+      cachedContainers = processedContainers;
+
+      // Calcular la tasa de tráfico local para Traefik de forma robusta
+      const traefik = cachedContainers.find(c => c.name.startsWith("hightraffic_traefik."));
+      if (traefik) {
+        const currentBytes = parseNetBytes(traefik.net);
+        const now = Date.now();
+        if (lastTraefikNetBytes !== null && lastTraefikNetTimestamp !== null) {
+          const elapsedSecs = (now - lastTraefikNetTimestamp) / 1000;
+          if (elapsedSecs > 0) {
+            const byteDiff = Math.max(0, currentBytes - lastTraefikNetBytes);
+            localTrafficRateKb = (byteDiff / 1024) / elapsedSecs;
+          }
+        }
+        lastTraefikNetBytes = currentBytes;
+        lastTraefikNetTimestamp = now;
+      }
+    }
   } catch (err) {
     console.error(`[ERROR Cache Stats] Fallo al actualizar métricas:`, err.message);
   }
@@ -227,6 +275,22 @@ function getCurrentReplicas() {
       { encoding: "utf-8", timeout: 5000 }
     ).trim();
     return parseInt(output, 10) || MIN_REPLICAS;
+  } catch (err) {
+    console.error(`[ERROR] No se pudo inspeccionar ${SERVICE_NAME}:`, err.message);
+    return MIN_REPLICAS;
+  }
+}
+
+// Versión asíncrona: evita bloquear el event loop durante la consulta a Docker.
+// Se usa en /api/metrics para que bajo carga alta el servidor siga atendiendo
+// peticiones y el bucle de caché de stats no se congele.
+async function getCurrentReplicasAsync() {
+  try {
+    const { stdout } = await execPromise(
+      `docker service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' ${SERVICE_NAME}`,
+      { timeout: 5000 }
+    );
+    return parseInt(stdout.trim(), 10) || MIN_REPLICAS;
   } catch (err) {
     console.error(`[ERROR] No se pudo inspeccionar ${SERVICE_NAME}:`, err.message);
     return MIN_REPLICAS;
@@ -394,7 +458,7 @@ const server = http.createServer(async (req, res) => {
 
   // Endpoint de Métricas Unificado para el Frontend
   if (req.method === "GET" && req.url === "/api/metrics") {
-    const current = getCurrentReplicas();
+    const current = await getCurrentReplicasAsync();
     const now = Date.now();
     const elapsed = (now - lastScaleTime) / 1000;
     const cooldownRemaining = lastScaleTime > 0 ? Math.max(0, Math.ceil(COOLDOWN_SECONDS - elapsed)) : 0;
@@ -447,6 +511,7 @@ const server = http.createServer(async (req, res) => {
       alert_status: isAlertFiring ? "firing" : "ok",
       scale_up_by: SCALE_UP_BY,
       scale_down_by: SCALE_DOWN_BY,
+      cpu_cores: CPU_CORES,
       queues: rabbitData,
       alerts: alertHistoryLog, // Historial persistido en memoria de Node.js
       containers: containers
