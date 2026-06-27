@@ -5,7 +5,7 @@
 <h1 align="center">🚀 High Traffic Light</h1>
 
 <p align="center">
-  Simulación de un problema real de producción y su resolución mediante escalado horizontal, procesamiento asíncrono y almacenamiento en caché de alta velocidad.
+  Problema real de producción y su resolución mediante escalado horizontal, procesamiento asíncrono y almacenamiento en caché de alta velocidad.
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ## 🚨 El Problema: Cuellos de Botella en Producción
 
-Durante picos de alta demanda (como Black Friday, venta de entradas o eventos masivos), las aplicaciones web tradicionales con una sola instancia experimentan graves problemas de escalabilidad:
+Durante picos de alta demanda las aplicaciones web tradicionales con una sola instancia experimentan graves problemas de escalabilidad:
 
 - **Saturación del Event Loop**: La CPU se satura procesando peticiones complejas o bloqueos de E/S.
 - **Encolamiento de Sockets**: Las solicitudes entrantes se encolan a nivel de red, incrementando drásticamente el tiempo de respuesta.
@@ -78,6 +78,20 @@ HighTraffic/
 │   ├── Dockerfile
 │   ├── package.json
 │   └── server.js        # Servidor Express, Worker y Cierre Ordenado
+│
+├── autoscaler/
+│   ├── Dockerfile
+│   └── server.js        # Webhook de autoescalado (Alertmanager → docker service scale)
+│
+├── telegraf/
+│   └── telegraf.conf    # Recolector de métricas (Docker API → Prometheus)
+│
+├── prometheus/
+│   ├── alert.rules      # Reglas de alerta CPU > 70% / < 25%
+│   └── prometheus.yml
+│
+├── alertmanager/
+│   └── alertmanager.yml  # Webhook apunta a http://autoscaler:9099/webhook
 │
 ├── traefik/
 │   └── traefik.yml      # Configuración de Entrypoints y API
@@ -147,20 +161,48 @@ k6 run stress.js
 3. **Cache Hit (200 OK)**:
    Las peticiones idénticas enviadas en el rango de los 10 segundos de la caché son capturadas por Redis y respondidas en milisegundos (`200 OK`), descargando de procesamiento al backend y a la cola.
 
+## 📈 Autoescalado Dinámico y Elástico (Estilo Kubernetes en Swarm)
+
+Para responder de manera inteligente ante picos inesperados de tráfico sin desperdiciar recursos de hardware, hemos diseñado e implementado una arquitectura de **Autoescalado Dinámico Automatizado** combinando **Telegraf**, **Prometheus**, **Alertmanager** y un **Autoscaler Webhook** ligero (servicio Node.js propio que ejecuta `docker service scale` directamente sobre el socket de Docker).
+
+> **Nota de diseño:** Originalmente el stack usaba [cAdvisor](https://github.com/google/cadvisor) como recolector de métricas de contenedores, pero se reemplazó por **Telegraf** (InfluxData) por dos motivos: cAdvisor lleva sin actualizarse desde 2023 (riesgo de deprecación, mismo problema que tuvo Orbiter), y consulta `/sys/fs/cgroup` directamente, lo que no funciona en Docker Desktop (Windows/Mac). Telegraf en cambio consulta la **API de Docker** (`/containers/stats`), por lo que recolecta métricas reales de CPU tanto en Linux como en Docker Desktop, y está activamente mantenido.
+
+> **Nota de diseño:** Originalmente el stack usaba [Orbiter](https://github.com/orbiterhost/orbiter) como puente entre Alertmanager y Docker Swarm. Se removió por un bug de diseño insalvable: su modo `autodetect` registra el autoscaler con una key que contiene `/` (`autoswarm/hightraffic_api`), lo que rompe el enrutamiento de gorilla/mux; además el flag `--config` no existe, por lo que no era posible cargar configuración estática. El webhook Node.js actual replica su comportamiento (cooldown, límites min/max, políticas anti-flapping) sin esa dependencia.
+
+### Cualidades y Características Clave
+
+1. **Parametrización por Entorno (Zero Hardcoding)**:
+   Todos los límites de réplicas y políticas de escala se configuran mediante el archivo [.env](file:///d:/Users/windows/Proyectos/HighTraffic/.env). Esto permite ajustar el comportamiento del clúster en segundos sin modificar el archivo de infraestructura.
+
+2. **Detección Rápida de Sobrecarga (Scale Up)**:
+   Si el uso de CPU promedio de los contenedores de la API supera el **70%** durante un intervalo continuo de **30 segundos**, el clúster escalará el servicio de inmediato sumando `SCALE_UP_BY` réplicas adicionales para absorber la carga.
+
+3. **Prevención Estricta de Flapping (Políticas de Estabilización)**:
+   - **Retardo Asimétrico**: Para evitar el apagado y encendido continuo de contenedores ("flapping"), el desescalado es sumamente cauteloso. Solo se reduce el número de réplicas si el consumo de CPU cae por debajo del **25%** de forma continua durante **5 minutos**.
+   - **Tiempo de Enfriamiento (Cooldown)**: Después de cualquier escalado en caliente, el Autoscaler ignora nuevas alertas durante un período definido por `SCALE_COOLDOWN` (default: `120s`), permitiendo que el clúster distribuya el tráfico y estabilice las conexiones.
+   - **Suelo de Alta Disponibilidad**: La infraestructura garantiza un mínimo de `API_REPLICAS_MIN` (5 réplicas) en ejecución en todo momento, asegurando tolerancia a fallos básica estable.
+
+4. **Monitoreo en Tiempo Real**:
+   El stack incluye paneles de visualización para depurar y optimizar el rendimiento:
+   - **Prometheus** (Puerto `9090`): Para evaluar las métricas de consumo de CPU y estados de las alertas.
+   - **Alertmanager** (Puerto `9093`): Para rastrear la entrega de notificaciones de escala al autoscaler.
+   - **Telegraf** (Puerto `9273`): Recolector de métricas de contenedores; expone `/metrics` en formato Prometheus.
+   - **Autoscaler Webhook** (Puerto `9099`): Endpoints de diagnóstico — `GET /health` (estado del servicio y réplicas actuales) y `POST /scale/up|down` (escalado manual).
+
 ---
 
 ## ⚖️ Docker Swarm vs Kubernetes: Decisiones de DevOps
 
 Esta arquitectura está diseñada para ser ágil y ligera (**"Light"**), utilizando **Docker Swarm**. A continuación se detalla la comparativa técnica para evaluar cuándo mantener este enfoque o migrar a Kubernetes:
 
-| Característica            | Enfoque "Light" (Docker Swarm)                                                  | Enfoque "Enterprise" (Kubernetes)                                                         |
-| :------------------------ | :------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------- |
-| **Complejidad Base**      | **Extremadamente Baja**. Curva de aprendizaje mínima para desarrolladores.      | **Alta**. Requiere un equipo o rol especializado de Platform / DevOps.                    |
-| **Uso de Recursos (RAM)** | **Mínimo (~50MB)**. No consume casi recursos del sistema en reposo.             | **Alto (~1.5GB a 2GB)** de consumo de base para el plano de control (Kubelet, API, etc.). |
-| **Escalado Dinámico**     | **Manual/Semimanual** (`docker service scale`).                                 | **Automático y Reactivo** (HPA basado en longitud de colas con KEDA).                     |
-| **Health Checks**         | **Básico** (Verifica el estado del servicio en el host).                        | **Avanzado** (Readiness/Liveness Probes, retira pods inestables de inmediato).            |
-| **Entornos**              | Excelente para servidores dedicados individuales o clústeres pequeños-medianos. | Estándar para nubes públicas multi-nodo con servicios gestionados (EKS, GKE, AKS).        |
+| Característica            | Enfoque "Light" (Docker Swarm)                                                         | Enfoque "Enterprise" (Kubernetes)                                                         |
+| :------------------------ | :------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------- |
+| **Complejidad Base**      | **Extremadamente Baja**. Curva de aprendizaje mínima para desarrolladores.             | **Alta**. Requiere un equipo o rol especializado de Platform / DevOps.                    |
+| **Uso de Recursos (RAM)** | **Mínimo (~50MB)**. No consume casi recursos del sistema en reposo.                    | **Alto (~1.5GB a 2GB)** de consumo de base para el plano de control (Kubelet, API, etc.). |
+| **Escalado Dinámico**     | **Automático y Elástico** (mediante Prometheus + Autoscaler Webhook con políticas anti-flapping). | **Automático y Reactivo** (HPA basado en CPU/RAM o longitud de colas con KEDA).           |
+| **Health Checks**         | **Básico** (Verifica el estado del servicio en el host).                               | **Avanzado** (Readiness/Liveness Probes, retira pods inestables de inmediato).            |
+| **Entornos**              | Excelente para servidores dedicados individuales o clústeres pequeños-medianos.        | Estándar para nubes públicas multi-nodo con servicios gestionados (EKS, GKE, AKS).        |
 
 ### Conclusión de Implementación
 
-El enfoque **High Traffic Light** con Docker Swarm es ideal para proyectos donde se busca el máximo rendimiento de hardware con el mínimo esfuerzo de administración. Si las demandas de tráfico se vuelven altamente volátiles y requieren autoscaling reactivo automático en la nube, se recomienda migrar el stack hacia Kubernetes.
+El enfoque **High Traffic Light** con Docker Swarm es ideal para proyectos donde se busca el máximo rendimiento de hardware con el mínimo esfuerzo de administración. Al incorporar el autoescalado dinámico automatizado mediante un Autoscaler Webhook ligero y la parametrización por medio del archivo `.env`, se obtiene el balance perfecto: la simplicidad y el bajísimo consumo de recursos de Swarm junto con la elasticidad reactiva ante picos de demanda característica de Kubernetes.

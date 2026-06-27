@@ -23,7 +23,7 @@ Toda aplicación del stack debe poseer un `Dockerfile` en su directorio raíz pa
 
 ```dockerfile
 # 1. Imagen base optimizada y liviana
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 # 2. Configurar directorio de trabajo
 WORKDIR /usr/src/app
@@ -274,21 +274,53 @@ services:
   docker swarm join --token <token_generado> <IP_del_Manager>:2377
   ```
 
-- **Desplegar o Actualizar la Pila de Servicios (Stack)**:
+- **Desplegar o Actualizar la Pila de Servicios (Stack)** (interpolando variables del `.env`):
 
   ```bash
-  docker stack deploy -c docker-compose.yaml mi_proyecto
+  # En Linux, las variables de .env se exportan automáticamente o se leen al desplegar
+  export $(cat .env | xargs) && docker stack deploy -c docker-compose.yaml hightraffic
   ```
 
-- **Escalar en caliente un Servicio**:
+- **Escalar en caliente un Servicio manualmente**:
 
   ```bash
-  docker service scale mi_proyecto_web-app=15
+  docker service scale hightraffic_api=10
   ```
 
 - **Monitorear los servicios del clúster**:
 
   ```bash
   docker service ls
-  docker service ps mi_proyecto_web-app
+  docker service ps hightraffic_api
   ```
+
+---
+
+## 📈 8. Autoescalado Dinámico Automatizado (Evitando el Flapping)
+
+Para entornos Linux de producción real, hemos incorporado una solución elástica compuesta por:
+
+1. **Telegraf** (InfluxData): Recolecta métricas de uso de CPU/RAM de los contenedores Swarm en tiempo real consultando la API de Docker (`/containers/stats`). A diferencia de cAdvisor, funciona tanto en Linux como en Docker Desktop y está activamente mantenido.
+2. **Prometheus**: Consume las métricas, calcula promedios y evalúa reglas de alerta.
+3. **Alertmanager**: Recibe alertas de sobrecarga o infrautilización y envía peticiones webhook HTTP POST.
+4. **Autoscaler Webhook** (`./autoscaler`): Servicio ligero Node.js que escucha el webhook de Alertmanager en `/webhook` y ejecuta `docker service scale` directamente sobre el socket local de Docker para redimensionar el número de réplicas en caliente.
+
+> **Nota de diseño:** Este componente reemplaza a [Orbiter](https://github.com/orbiterhost/orbiter), que se retiró por un bug de diseño insalvable: su modo `autodetect` registra el autoscaler con una key que contiene `/` (`autoswarm/hightraffic_api`), lo que rompe el enrutamiento de gorilla/mux; además el flag `--config` no existe, impidiendo cargar configuración estática. El webhook Node.js actual replica su funcionalidad sin esa dependencia.
+
+### ⚙️ Variables de Entorno del Autoscaler
+
+El archivo [.env](file:///d:/Users/windows/Proyectos/HighTraffic/.env) centraliza todos los parámetros que gobiernan el autoescalado dinámico:
+
+- `API_REPLICAS_MIN`: El límite de réplicas mínimo garantizado (default: `5`). El clúster nunca bajará de este número.
+- `API_REPLICAS_MAX`: El límite máximo seguro para resguardar recursos del hardware (default: `15`).
+- `SCALE_UP_BY`: Cantidad de contenedores a agregar al detectar sobrecarga (default: `2`).
+- `SCALE_DOWN_BY`: Cantidad de contenedores a remover al detectar baja carga (default: `1`).
+- `SCALE_COOLDOWN`: Tiempo de enfriamiento (cooldown) tras un comando de escalado (default: `120s` / 2 minutos). En este intervalo se ignora cualquier nueva señal de escala para estabilizar las conexiones.
+
+### 🛡️ Políticas de Prevención de Flapping
+
+Para evitar inestabilidades y fluctuaciones constantes de red en producción, se implementan tres niveles de amortiguación:
+
+1. **Retardo Asimétrico**: El escalado ascendente (Up) se dispara en **30 segundos** ante un pico de CPU > 70% para salvaguardar la experiencia del usuario. En cambio, el desescalado (Down) requiere que la CPU caiga por debajo del 25% de forma continua durante **5 minutos** completos antes de retirar réplicas.
+2. **Período de Enfriamiento**: El Autoscaler Webhook bloquea cualquier nuevo cambio de escala durante el `SCALE_COOLDOWN` (default: `120s`) después de cada escalado.
+3. **Suelo de Contención**: La escala nunca caerá por debajo de `API_REPLICAS_MIN` (5 réplicas base de alta disponibilidad).

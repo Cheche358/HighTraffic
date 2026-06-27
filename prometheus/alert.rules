@@ -1,0 +1,23 @@
+groups:
+  - name: scaling_rules
+    rules:
+      # Regla para escalar hacia arriba (Up)
+      # docker_container_cpu_usage_percent: uso de CPU por contenedor (0-100),
+      # ya normalizado por núcleos/shares por Telegraf (sin división manual).
+      # El tag com_docker_swarm_service_name identifica el servicio de Swarm.
+      - alert: APIOverloaded
+        expr: avg(docker_container_cpu_usage_percent{com_docker_swarm_service_name="hightraffic_api"}) > 70
+        for: 30s
+        labels:
+          scale: "up"
+        annotations:
+          summary: "API Service is overloaded, scaling up."
+
+      # Regla para escalar hacia abajo (Down) con colchón de 5 minutos contra flapping
+      - alert: APIUnderutilized
+        expr: avg(docker_container_cpu_usage_percent{com_docker_swarm_service_name="hightraffic_api"}) < 25
+        for: 5m
+        labels:
+          scale: "down"
+        annotations:
+          summary: "API Service is underutilized, scaling down."

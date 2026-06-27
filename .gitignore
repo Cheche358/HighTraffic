@@ -6,6 +6,7 @@ app/node_modules/
 *.log
 .temp/
 tmp/
+.env
 
 # Archivos del sistema
 .DS_Store

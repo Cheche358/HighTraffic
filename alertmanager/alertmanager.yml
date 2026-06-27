@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname"]
+  group_wait: 5s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: "autoscaler-webhook"
+
+receivers:
+  - name: "autoscaler-webhook"
+    webhook_configs:
+      - url: "http://autoscaler:9099/webhook"
+        send_resolved: false
