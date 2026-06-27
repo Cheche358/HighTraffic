@@ -114,7 +114,7 @@
       <!-- Alertmanager Feed -->
       <article class="card">
         <h2 class="card-title">Alertas Activas (Alertmanager)</h2>
-        <div class="alert-feed" id="alertmanager-feed-list">
+        <div class="alert-feed" id="alertmanager-feed-list" style="height: 540px; overflow: hidden;">
           <div class="alert-empty">No hay alertas activas</div>
         </div>
       </article>
@@ -343,9 +343,26 @@
         const apiCardsGrid = document.getElementById('api-cards-grid');
         const systemCardsGrid = document.getElementById('system-cards-grid');
         
+        // Orden de prioridad para módulos de sistema
+        const SYSTEM_ORDER = ['traefik', 'rabbitmq', 'telegraf', 'autoscaler', 'prometheus', 'redis', 'alertmanager'];
+        function getSystemPriority(name) {
+          const idx = SYSTEM_ORDER.findIndex(key => name.includes(key));
+          return idx === -1 ? 99 : idx;
+        }
+
         if (Array.isArray(data.containers) && data.containers.length > 0) {
-          const apis = data.containers.filter(c => c.name.includes("hightraffic_api."));
-          const system = data.containers.filter(c => !c.name.includes("hightraffic_api."));
+          const apis = data.containers
+            .filter(c => c.name.includes("hightraffic_api."))
+            .sort((a, b) => {
+              // Ordenar numéricamente por el índice de réplica (ej. hightraffic_api.3.xxx → 3)
+              const idxA = parseInt(a.name.split('.')[1]) || 0;
+              const idxB = parseInt(b.name.split('.')[1]) || 0;
+              return idxA - idxB;
+            });
+
+          const system = data.containers
+            .filter(c => !c.name.includes("hightraffic_api."))
+            .sort((a, b) => getSystemPriority(a.name) - getSystemPriority(b.name));
           
           if (apis.length > 0) {
             apiCardsGrid.innerHTML = apis.map(c => {
@@ -411,7 +428,7 @@
               if (c.name.includes("prometheus") || c.name.includes("rabbitmq")) {
                 limit = 268435456; // 256MB
               } else if (c.name.includes("traefik")) {
-                limit = 8589934592; // 8GB
+                limit = 2147483648; // 2GB
               }
               
               const memPct = Math.min(100, (mem.bytes / limit) * 100);
@@ -515,7 +532,11 @@
         const alertList = document.getElementById('alertmanager-feed-list');
         
         if (Array.isArray(data.alerts) && data.alerts.length > 0) {
-          alertList.innerHTML = data.alerts.map(a => {
+          // Ordenar de más reciente a más antigua y mostrar solo las últimas 5
+          const sortedAlerts = [...data.alerts]
+            .sort((a, b) => new Date(b.startsAt) - new Date(a.startsAt))
+            .slice(0, 5);
+          alertList.innerHTML = sortedAlerts.map(a => {
             const isCritical = a.severity === 'critical';
             let statusBadge = '';
             let cardClass = 'alert-item';
