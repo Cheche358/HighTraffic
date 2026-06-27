@@ -406,9 +406,18 @@
             systemCardsGrid.innerHTML = system.map(c => {
               const cpuPct = Math.min(100, parseFloat(c.cpu) || 0);
               const mem = parseMemory(c.memory);
-              const limit = c.name.includes("prometheus") || c.name.includes("rabbitmq") ? 268435456 : 134217728; // 256MB o 128MB
+              
+              let limit = 134217728; // 128MB
+              if (c.name.includes("prometheus") || c.name.includes("rabbitmq")) {
+                limit = 268435456; // 256MB
+              } else if (c.name.includes("traefik")) {
+                limit = 8589934592; // 8GB
+              }
+              
               const memPct = Math.min(100, (mem.bytes / limit) * 100);
               const friendlyName = getFriendlyName(c.name);
+              
+              const limitLabel = limit >= 1073741824 ? `${limit / 1073741824}GB` : `${limit / 1048576}MB`;
               
               return `
                 <div class="replica-card">
@@ -435,7 +444,7 @@
                     <!-- Memory Metric -->
                     <div class="replica-metric-row">
                       <div class="replica-metric-header">
-                        <span>MEMORIA (Ref. ${limit/1048576}MB)</span>
+                        <span>MEMORIA (Ref. ${limitLabel})</span>
                         <span class="replica-metric-val">${mem.str}</span>
                       </div>
                       <div class="metric-bar-bg">
