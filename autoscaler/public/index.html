@@ -71,23 +71,8 @@
       <!-- Módulos de Sistema Card -->
       <article class="card">
         <h2 class="card-title">Infraestructura & Módulos de Sistema</h2>
-        <div class="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Módulo</th>
-                <th>CPU (%)</th>
-                <th>Memoria Utilizada</th>
-                <th>Carga de Red I/O (Gráfica)</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody id="system-table-body">
-              <tr>
-                <td colspan="5" style="text-align: center; color: var(--text-muted);">Cargando módulos...</td>
-              </tr>
-            </tbody>
-          </table>
+        <div id="system-cards-grid" class="replica-cards-grid">
+          <div class="alert-empty">Cargando módulos...</div>
         </div>
       </article>
 
@@ -326,6 +311,22 @@
           `;
         }
 
+        // Nombres amigables para los módulos
+        function getFriendlyName(technicalName) {
+          if (technicalName.startsWith("hightraffic_api")) {
+            const replicaId = technicalName.split('.')[1] || '?';
+            return `API Réplica #${replicaId}`;
+          }
+          if (technicalName.startsWith("hightraffic_autoscaler")) return "Autoscaler";
+          if (technicalName.startsWith("hightraffic_telegraf")) return "Telegraf";
+          if (technicalName.startsWith("hightraffic_traefik")) return "Traefik";
+          if (technicalName.startsWith("hightraffic_redis")) return "Redis";
+          if (technicalName.startsWith("hightraffic_rabbitmq")) return "RabbitMQ";
+          if (technicalName.startsWith("hightraffic_prometheus")) return "Prometheus";
+          if (technicalName.startsWith("hightraffic_alertmanager")) return "Alertmanager";
+          return technicalName.split('.')[0] || technicalName;
+        }
+
         // Helper para parsear memoria ("38.12MiB / 7.78GiB")
         function parseMemory(memStr) {
           const parts = memStr.split("/");
@@ -340,7 +341,7 @@
 
         // ─── Renderizar Contenedores Activos (APIs vs Sistema) ───
         const apiCardsGrid = document.getElementById('api-cards-grid');
-        const systemTableBody = document.getElementById('system-table-body');
+        const systemCardsGrid = document.getElementById('system-cards-grid');
         
         if (Array.isArray(data.containers) && data.containers.length > 0) {
           const apis = data.containers.filter(c => c.name.includes("hightraffic_api."));
@@ -351,11 +352,16 @@
               const cpuPct = Math.min(100, parseFloat(c.cpu) || 0);
               const mem = parseMemory(c.memory);
               const memPct = Math.min(100, (mem.bytes / 134217728) * 100); // 128MB como límite visual
+              const friendlyName = getFriendlyName(c.name);
               
               return `
                 <div class="replica-card">
                   <div class="replica-card-header">
-                    <span class="replica-name">⚡ API Réplica #${c.name.split('.')[1] || '?' }</span>
+                    <span class="replica-name">
+                      <a href="#" class="container-detail-link" onclick="showContainerDetail('${c.name}', '${c.fullId}', '${c.image}'); return false;">
+                        ⚡ ${friendlyName}
+                      </a>
+                    </span>
                     <span class="badge-running">Active</span>
                   </div>
                   <div class="replica-card-body">
@@ -397,21 +403,63 @@
           }
           
           if (system.length > 0) {
-            systemTableBody.innerHTML = system.map(c => `
-              <tr>
-                <td><strong>${c.name.split('.')[0]}</strong></td>
-                <td>${c.cpu}</td>
-                <td>${c.memory}</td>
-                <td>${renderNetBar(c.net)}</td>
-                <td><span class="badge-running">Running</span></td>
-              </tr>
-            `).join('');
+            systemCardsGrid.innerHTML = system.map(c => {
+              const cpuPct = Math.min(100, parseFloat(c.cpu) || 0);
+              const mem = parseMemory(c.memory);
+              const limit = c.name.includes("prometheus") || c.name.includes("rabbitmq") ? 268435456 : 134217728; // 256MB o 128MB
+              const memPct = Math.min(100, (mem.bytes / limit) * 100);
+              const friendlyName = getFriendlyName(c.name);
+              
+              return `
+                <div class="replica-card">
+                  <div class="replica-card-header">
+                    <span class="replica-name">
+                      <a href="#" class="container-detail-link" onclick="showContainerDetail('${c.name}', '${c.fullId}', '${c.image}'); return false;">
+                        ⚙️ ${friendlyName}
+                      </a>
+                    </span>
+                    <span class="badge-running" style="background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border-color: rgba(255, 255, 255, 0.1);">System</span>
+                  </div>
+                  <div class="replica-card-body">
+                    <!-- CPU Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header">
+                        <span>CPU</span>
+                        <span class="replica-metric-val">${c.cpu}</span>
+                      </div>
+                      <div class="metric-bar-bg">
+                        <div class="metric-bar-fill cpu" style="width: ${cpuPct}%"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Memory Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header">
+                        <span>MEMORIA (Ref. ${limit/1048576}MB)</span>
+                        <span class="replica-metric-val">${mem.str}</span>
+                      </div>
+                      <div class="metric-bar-bg">
+                        <div class="metric-bar-fill memory" style="width: ${memPct}%"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Network Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header" style="margin-bottom: 0.25rem;">
+                        <span>TRÁNSITO RED I/O</span>
+                      </div>
+                      ${renderNetBar(c.net)}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
           } else {
-            systemTableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No hay módulos de sistema en ejecución</td></tr>`;
+            systemCardsGrid.innerHTML = `<div class="alert-empty">No hay módulos de sistema en ejecución</div>`;
           }
         } else {
           apiCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
-          systemTableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No se detectaron contenedores activos</td></tr>`;
+          systemCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
         }
 
         // ─── Renderizar Colas RabbitMQ ───
@@ -497,9 +545,45 @@
       }
     }
 
+    // Modal de Detalles de Contenedor
+    function showContainerDetail(name, id, image) {
+      document.getElementById('modal-container-name').textContent = name;
+      document.getElementById('modal-container-id').textContent = id;
+      document.getElementById('modal-container-image').textContent = image;
+      document.getElementById('container-modal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('container-modal').classList.remove('active');
+    }
+
     // Intervalo de Actualización de Métricas (Cada 3 segundos)
     fetchMetrics();
     setInterval(fetchMetrics, 3000);
   </script>
+
+  <!-- Container Detail Modal -->
+  <div id="container-modal" class="modal-overlay" onclick="closeModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="modal-container-title">Detalles del Contenedor</h3>
+        <button class="modal-close-btn" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-detail-row">
+          <span class="modal-detail-label">Nombre Técnico (Swarm):</span>
+          <span class="modal-detail-value" id="modal-container-name">-</span>
+        </div>
+        <div class="modal-detail-row">
+          <span class="modal-detail-label">ID de Contenedor:</span>
+          <span class="modal-detail-value" id="modal-container-id" style="font-family: monospace; font-size: 0.85rem; word-break: break-all;">-</span>
+        </div>
+        <div class="modal-detail-row">
+          <span class="modal-detail-label">Imagen del Contenedor:</span>
+          <span class="modal-detail-value" id="modal-container-image" style="font-family: monospace; font-size: 0.85rem; word-break: break-all;">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

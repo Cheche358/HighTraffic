@@ -141,27 +141,57 @@ function queryAlertmanager() {
   });
 }
 
-// Helper para obtener docker stats de forma local
+// Helper para obtener docker stats consolidado con IDs e imágenes
 function getDockerStats() {
   try {
-    const output = execSync(
+    // 1. Obtener ID e Imagen desde docker ps
+    const psOutput = execSync(
+      `docker ps --no-trunc --format "{{.Names}}|{{.ID}}|{{.Image}}"`,
+      { encoding: "utf-8", timeout: 5000 }
+    ).trim();
+    
+    const containerMap = {};
+    if (psOutput) {
+      psOutput.split("\n").forEach(line => {
+        const parts = line.split("|");
+        const names = parts[0];
+        const id = parts[1];
+        const image = parts[2];
+        if (names) {
+          const primaryName = names.split(",")[0].trim();
+          containerMap[primaryName] = {
+            id: id ? id.substring(0, 12) : "unknown",
+            fullId: id || "unknown",
+            image: image || "unknown"
+          };
+        }
+      });
+    }
+
+    // 2. Obtener CPU, Memoria y Red desde docker stats
+    const statsOutput = execSync(
       `docker stats --no-stream --format "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}"`,
       { encoding: "utf-8", timeout: 8000 }
     ).trim();
 
-    if (!output) return [];
+    if (!statsOutput) return [];
 
-    return output.split("\n").map(line => {
+    return statsOutput.split("\n").map(line => {
       const parts = line.split("|");
+      const name = parts[0] || "unknown";
+      const info = containerMap[name] || { id: "unknown", fullId: "unknown", image: "unknown" };
       return {
-        name: parts[0] || "unknown",
+        name: name,
+        id: info.id,
+        fullId: info.fullId,
+        image: info.image,
         cpu: parts[1] || "0.00%",
         memory: parts[2] || "0.00MiB / 0.00MiB",
         net: parts[3] || "0.00B / 0.00B"
       };
     }).filter(c => c.name.startsWith("hightraffic_"));
   } catch (err) {
-    console.error(`[ERROR] No se pudo obtener docker stats:`, err.message);
+    console.error(`[ERROR] No se pudo obtener docker stats consolidado:`, err.message);
     return [];
   }
 }
