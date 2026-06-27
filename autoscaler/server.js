@@ -259,6 +259,44 @@ function scaleService(direction) {
   }
 }
 
+let alertHistoryLog = [];
+
+// Procesar alertas y mantener el log en el backend
+function processAlertsHistory(activeAlerts) {
+  if (!Array.isArray(activeAlerts)) return;
+  
+  // 1. Añadir nuevas alertas al historial si no existen
+  activeAlerts.forEach(a => {
+    const exists = alertHistoryLog.find(h => h.name === a.name && h.startsAt === a.startsAt);
+    if (!exists) {
+      alertHistoryLog.unshift({
+        name: a.name,
+        severity: a.severity || "warning",
+        summary: a.summary || a.description || "Alerta disparada",
+        startsAt: a.startsAt || new Date().toISOString(),
+        resolved: false,
+        resolvedAt: null
+      });
+    }
+  });
+
+  // 2. Detectar cuáles del historial ya se resolvieron
+  alertHistoryLog.forEach(h => {
+    if (!h.resolved) {
+      const stillActive = activeAlerts.some(a => a.name === h.name && a.startsAt === h.startsAt);
+      if (!stillActive) {
+        h.resolved = true;
+        h.resolvedAt = new Date().toISOString();
+      }
+    }
+  });
+
+  // 3. Limitar historial a las últimas 50 alertas
+  if (alertHistoryLog.length > 50) {
+    alertHistoryLog.length = 50;
+  }
+}
+
 // ─── Parsear Alertas de Alertmanager ───
 function parseAlertmanagerPayload(body) {
   try {
@@ -342,6 +380,9 @@ const server = http.createServer(async (req, res) => {
     // Obtener las estadísticas locales de contenedores desde la caché
     const containers = cachedContainers;
 
+    // Procesar alertas y actualizar el historial acumulativo del backend
+    processAlertsHistory(alertData);
+
     // Determinar estado de alerta del badge local
     const isAlertFiring = alertData.some(a => a.name === "APIOverloaded" && a.state === "firing");
 
@@ -359,7 +400,7 @@ const server = http.createServer(async (req, res) => {
       scale_up_by: SCALE_UP_BY,
       scale_down_by: SCALE_DOWN_BY,
       queues: rabbitData,
-      alerts: alertData,
+      alerts: alertHistoryLog, // Historial persistido en memoria de Node.js
       containers: containers
     }));
     return;

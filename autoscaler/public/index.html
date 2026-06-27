@@ -183,8 +183,6 @@
       }
     });
 
-    const alertHistory = [];
-
     let cooldownTotal = 120;
     let cooldownTimer = 0;
     let cooldownInterval = null;
@@ -504,45 +502,11 @@
           return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
         }
 
-        // ─── Renderizar Feed de Alertas (Historial Acumulativo) ───
+        // ─── Renderizar Feed de Alertas (Historial Acumulativo del Backend) ───
         const alertList = document.getElementById('alertmanager-feed-list');
         
-        // 1. Procesar alertas activas entrantes
-        if (Array.isArray(data.alerts)) {
-          data.alerts.forEach(a => {
-            const exists = alertHistory.find(h => h.name === a.name && h.startsAt === a.startsAt);
-            if (!exists) {
-              alertHistory.unshift({
-                name: a.name,
-                severity: a.severity,
-                summary: a.summary,
-                startsAt: a.startsAt,
-                resolved: false,
-                resolvedAt: null
-              });
-            }
-          });
-
-          // 2. Detectar cuáles alertas en el historial ya se resolvieron
-          alertHistory.forEach(h => {
-            if (!h.resolved) {
-              const stillActive = data.alerts.some(a => a.name === h.name && a.startsAt === h.startsAt);
-              if (!stillActive) {
-                h.resolved = true;
-                h.resolvedAt = new Date().toISOString();
-              }
-            }
-          });
-        }
-
-        // 3. Mantener tamaño máximo del log local
-        if (alertHistory.length > 35) {
-          alertHistory.length = 35;
-        }
-
-        // 4. Renderizar el historial
-        if (alertHistory.length > 0) {
-          alertList.innerHTML = alertHistory.map(a => {
+        if (Array.isArray(data.alerts) && data.alerts.length > 0) {
+          alertList.innerHTML = data.alerts.map(a => {
             const isCritical = a.severity === 'critical';
             let statusBadge = '';
             let cardClass = 'alert-item';
