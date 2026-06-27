@@ -113,5 +113,5 @@ services:
 
 networks:
   default:
-    name: ht_net
+    name: ht_net_v2
     driver: overlay

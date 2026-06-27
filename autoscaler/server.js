@@ -1,4 +1,6 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const { execSync } = require("child_process");
 
 // ─── Configuración desde Variables de Entorno ───
@@ -11,6 +13,36 @@ const SCALE_DOWN_BY = parseInt(process.env.SCALE_DOWN_BY || "1", 10);
 const COOLDOWN_SECONDS = parseInt(process.env.SCALE_COOLDOWN || "120", 10);
 
 let lastScaleTime = 0;
+
+// Helper para consultar Prometheus desde la red interna de Swarm
+function queryPrometheus(query) {
+  return new Promise((resolve) => {
+    const url = `http://prometheus:9090/api/v1/query?query=${encodeURIComponent(query)}`;
+    const req = http.get(url, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.status === "success") {
+            resolve(parsed.data.result);
+          } else {
+            resolve([]);
+          }
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+    req.on("error", () => {
+      resolve([]);
+    });
+    req.setTimeout(2000, () => {
+      req.destroy();
+      resolve([]);
+    });
+  });
+}
 
 // ─── Obtener Réplicas Actuales ───
 function getCurrentReplicas() {
@@ -85,7 +117,18 @@ function parseAlertmanagerPayload(body) {
 }
 
 // ─── Servidor HTTP ───
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  // Configuración de CORS por si se necesita desarrollo externo
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   // Health check
   if (req.method === "GET" && req.url === "/health") {
     const current = getCurrentReplicas();
@@ -96,6 +139,45 @@ const server = http.createServer((req, res) => {
       current_replicas: current,
       min: MIN_REPLICAS,
       max: MAX_REPLICAS,
+    }));
+    return;
+  }
+
+  // Endpoint de Métricas Unificado para el Frontend
+  if (req.method === "GET" && req.url === "/api/metrics") {
+    const current = getCurrentReplicas();
+    const now = Date.now();
+    const elapsed = (now - lastScaleTime) / 1000;
+    const cooldownRemaining = lastScaleTime > 0 ? Math.max(0, Math.ceil(COOLDOWN_SECONDS - elapsed)) : 0;
+
+    // Consultar CPU Promedio y estado de Alertas a Prometheus
+    const cpuQuery = `avg(docker_container_cpu_usage_percent{com_docker_swarm_service_name="${SERVICE_NAME}"})`;
+    const alertQuery = `ALERTS{alertname="APIOverloaded",alertstate="firing"}`;
+
+    const [cpuResult, alertResult] = await Promise.all([
+      queryPrometheus(cpuQuery),
+      queryPrometheus(alertQuery)
+    ]);
+
+    let cpuUsage = 0;
+    if (cpuResult.length > 0 && cpuResult[0].value) {
+      cpuUsage = parseFloat(cpuResult[0].value[1]) || 0;
+    }
+
+    const isAlertFiring = alertResult.length > 0;
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      service: SERVICE_NAME,
+      replicas: current,
+      min: MIN_REPLICAS,
+      max: MAX_REPLICAS,
+      cooldown_seconds: COOLDOWN_SECONDS,
+      cooldown_remaining: cooldownRemaining,
+      cpu_usage: parseFloat(cpuUsage.toFixed(2)),
+      alert_status: isAlertFiring ? "firing" : "ok",
+      scale_up_by: SCALE_UP_BY,
+      scale_down_by: SCALE_DOWN_BY
     }));
     return;
   }
@@ -112,8 +194,6 @@ const server = http.createServer((req, res) => {
   }
 
   // Alertmanager webhook: POST /webhook
-  // Responde 200 inmediatamente y escala de forma asincrona para que
-  // Alertmanager no agote el timeout ni reintente la notificacion.
   if (req.method === "POST" && req.url === "/webhook") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
@@ -132,14 +212,38 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 404
-  res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "Not found" }));
+  // Servir archivos estáticos del panel (SPA)
+  const publicDir = path.join(__dirname, "public");
+  let filePath = path.join(publicDir, req.url === "/" ? "index.html" : req.url);
+
+  // Evitar Directory Traversal
+  if (!filePath.startsWith(publicDir)) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Access denied" }));
+    return;
+  }
+
+  fs.readFile(filePath, (err, content) => {
+    if (err) {
+      // Si el archivo no existe, responder 404
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+
+    let contentType = "text/html";
+    if (filePath.endsWith(".css")) contentType = "text/css";
+    if (filePath.endsWith(".js")) contentType = "text/javascript";
+    if (filePath.endsWith(".json")) contentType = "application/json";
+
+    res.writeHead(200, { "Content-Type": contentType });
+    res.end(content);
+  });
 });
 
 server.listen(PORT, () => {
   console.log("═══════════════════════════════════════════════════════");
-  console.log("  🚀 Autoscaler Webhook Server");
+  console.log("  🚀 Autoscaler Webhook & Monitor Server");
   console.log("═══════════════════════════════════════════════════════");
   console.log(`  Puerto:          ${PORT}`);
   console.log(`  Servicio:        ${SERVICE_NAME}`);
@@ -149,7 +253,9 @@ server.listen(PORT, () => {
   console.log(`  Cooldown:        ${COOLDOWN_SECONDS}s`);
   console.log("───────────────────────────────────────────────────────");
   console.log("  Endpoints:");
+  console.log("    GET  /             → Web Panel Dashboard");
   console.log("    GET  /health       → Estado del servicio");
+  console.log("    GET  /api/metrics  → Métricas para el Dashboard");
   console.log("    POST /webhook      → Alertmanager webhook");
   console.log("    POST /scale/up     → Escalar manualmente");
   console.log("    POST /scale/down   → Desescalar manualmente");

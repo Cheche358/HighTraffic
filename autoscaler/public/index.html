@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HighTraffic - Web Panel Monitor</title>
+  <meta name="description" content="Panel unificado de control y monitoreo para la arquitectura distribuida de HighTraffic en Docker Swarm.">
+  <link rel="stylesheet" href="styles.css">
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <header>
+    <div class="logo-section">
+      <h1 id="panel-main-title">
+        <span>⚡</span> HighTraffic Web Panel
+      </h1>
+    </div>
+    <div id="system-status-badge" class="status-badge">
+      Monitoreando
+    </div>
+  </header>
+
+  <main>
+    <!-- Left Section: Metrics & Chart -->
+    <section class="dashboard-content">
+      
+      <div class="metric-grid">
+        <!-- Replicas Card -->
+        <article class="card">
+          <h2 class="card-title">Réplicas del Servicio</h2>
+          <div class="card-value" id="metrics-replicas">
+            5 <span class="card-unit">/ 15</span>
+          </div>
+        </article>
+
+        <!-- CPU Card -->
+        <article class="card">
+          <h2 class="card-title">CPU Promedio</h2>
+          <div class="card-value" id="metrics-cpu">
+            0.0<span class="card-unit">%</span>
+          </div>
+        </article>
+
+        <!-- Cooldown Card -->
+        <article class="card">
+          <h2 class="card-title">Estado de Cooldown</h2>
+          <div class="card-value" id="metrics-cooldown-value" style="font-size: 1.8rem; height: 100%; display: flex; align-items: center;">
+            Listo
+          </div>
+        </article>
+      </div>
+
+      <!-- Live Chart Card -->
+      <article class="card chart-container">
+        <h2 class="card-title">Histórico de Carga de CPU (Telegraf)</h2>
+        <div class="chart-wrapper">
+          <canvas id="cpuChart"></canvas>
+        </div>
+      </article>
+
+    </section>
+
+    <!-- Right Section: Controls & Configuration -->
+    <aside class="control-sidebar">
+      
+      <!-- Scaling Actions -->
+      <article class="card">
+        <h2 class="card-title">Acciones de Escalado</h2>
+        <div class="btn-container">
+          <button id="btn-scale-up" class="btn-up" onclick="triggerManualScale('up')">
+            Escalar API (+2)
+          </button>
+          <button id="btn-scale-down" class="btn-down" onclick="triggerManualScale('down')">
+            Desescalar API (-1)
+          </button>
+        </div>
+      </article>
+
+      <!-- Cooldown visual progress -->
+      <article class="card">
+        <h2 class="card-title">Enfriamiento (Cooldown)</h2>
+        <div class="cooldown-indicator">
+          <div class="cooldown-bar-bg">
+            <div id="cooldown-progress" class="cooldown-bar-fill"></div>
+          </div>
+          <div class="cooldown-text">
+            <span id="cooldown-timer-text">Disponible</span>
+            <span id="cooldown-max-text">120s</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Configuration details -->
+      <article class="card">
+        <h2 class="card-title">Parámetros (.env)</h2>
+        <div class="detail-list">
+          <div class="detail-item">
+            <span class="detail-label">Servicio objetivo:</span>
+            <span class="detail-value" id="config-service">hightraffic_api</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Réplicas mínimas:</span>
+            <span class="detail-value" id="config-min-replicas">5</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Réplicas máximas:</span>
+            <span class="detail-value" id="config-max-replicas">15</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Paso de subida (Up):</span>
+            <span class="detail-value" id="config-scale-up">2</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Paso de bajada (Down):</span>
+            <span class="detail-value" id="config-scale-down">1</span>
+          </div>
+        </div>
+      </article>
+
+    </aside>
+  </main>
+
+  <script>
+    // Configuración del Histórico del Gráfico
+    const MAX_CHART_POINTS = 30;
+    const cpuDataHistory = Array(MAX_CHART_POINTS).fill(0);
+    const chartLabels = Array(MAX_CHART_POINTS).fill('');
+
+    // Inicialización del Gráfico Chart.js
+    const ctx = document.getElementById('cpuChart').getContext('2d');
+    const cpuChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: chartLabels,
+        datasets: [{
+          label: 'Uso de CPU (%)',
+          data: cpuDataHistory,
+          borderColor: '#6366f1',
+          borderWidth: 2,
+          backgroundColor: 'rgba(99, 102, 241, 0.05)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 5
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: { display: false },
+          y: {
+            min: 0,
+            max: 100,
+            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+            ticks: { color: '#9ca3af' }
+          }
+        }
+      }
+    });
+
+    let cooldownTotal = 120;
+    let cooldownTimer = 0;
+    let cooldownInterval = null;
+
+    // Ejecutar cuenta regresiva visual del Cooldown en el cliente
+    function startClientCooldown(secondsRemaining, totalSeconds) {
+      cooldownTotal = totalSeconds || 120;
+      cooldownTimer = secondsRemaining;
+      
+      if (cooldownInterval) clearInterval(cooldownInterval);
+      
+      updateCooldownUI();
+      
+      cooldownInterval = setInterval(() => {
+        cooldownTimer--;
+        if (cooldownTimer <= 0) {
+          cooldownTimer = 0;
+          clearInterval(cooldownInterval);
+        }
+        updateCooldownUI();
+      }, 1000);
+    }
+
+    function updateCooldownUI() {
+      const fill = document.getElementById('cooldown-progress');
+      const text = document.getElementById('cooldown-timer-text');
+      const maxText = document.getElementById('cooldown-max-text');
+      const cooldownValue = document.getElementById('metrics-cooldown-value');
+      
+      maxText.textContent = `${cooldownTotal}s`;
+      
+      if (cooldownTimer > 0) {
+        const percent = (cooldownTimer / cooldownTotal) * 100;
+        fill.style.width = `${percent}%`;
+        text.textContent = `Enfriamiento: ${cooldownTimer}s`;
+        cooldownValue.textContent = `${cooldownTimer}s`;
+        cooldownValue.style.color = 'var(--color-warning)';
+        
+        document.getElementById('btn-scale-up').disabled = true;
+        document.getElementById('btn-scale-down').disabled = true;
+      } else {
+        fill.style.width = '0%';
+        text.textContent = 'Disponible';
+        cooldownValue.textContent = 'Listo';
+        cooldownValue.style.color = 'var(--color-success)';
+        
+        // El estado de habilitado se definirá según los límites de réplicas en fetchMetrics
+      }
+    }
+
+    // Consultar Métricas al Backend de Node.js
+    async function fetchMetrics() {
+      try {
+        const response = await fetch('/api/metrics');
+        if (!response.ok) throw new Error('Network error');
+        
+        const data = await response.json();
+        
+        // Actualizar Valores de Tarjetas
+        document.getElementById('metrics-replicas').innerHTML = `${data.replicas} <span class="card-unit">/ ${data.max}</span>`;
+        document.getElementById('metrics-cpu').innerHTML = `${data.cpu_usage.toFixed(1)}<span class="card-unit">%</span>`;
+        
+        // Actualizar Detalles de Configuración
+        document.getElementById('config-service').textContent = data.service;
+        document.getElementById('config-min-replicas').textContent = data.min;
+        document.getElementById('config-max-replicas').textContent = data.max;
+        document.getElementById('config-scale-up').textContent = data.scale_up_by;
+        document.getElementById('config-scale-down').textContent = data.scale_down_by;
+        
+        // Manejar el Cooldown desde la API
+        if (data.cooldown_remaining > 0) {
+          if (cooldownTimer === 0 || Math.abs(cooldownTimer - data.cooldown_remaining) > 2) {
+            startClientCooldown(data.cooldown_remaining, data.cooldown_seconds);
+          }
+        } else {
+          cooldownTimer = 0;
+          updateCooldownUI();
+          
+          // Habilitar/Deshabilitar botones según límites de escala
+          document.getElementById('btn-scale-up').disabled = (data.replicas >= data.max);
+          document.getElementById('btn-scale-down').disabled = (data.replicas <= data.min);
+        }
+
+        // Estado del Badge de Alertas
+        const badge = document.getElementById('system-status-badge');
+        if (data.alert_status === "firing") {
+          badge.textContent = "API Sobrecargada";
+          badge.className = "status-badge firing";
+        } else {
+          badge.textContent = "Sistema Estable";
+          badge.className = "status-badge";
+        }
+
+        // Actualizar Histórico del Gráfico
+        cpuDataHistory.push(data.cpu_usage);
+        cpuDataHistory.shift();
+        
+        const now = new Date();
+        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+        chartLabels.push(timeStr);
+        chartLabels.shift();
+        
+        cpuChart.update();
+        
+      } catch (error) {
+        console.error('Error al obtener métricas:', error);
+        document.getElementById('system-status-badge').textContent = "Error de Conexión";
+        document.getElementById('system-status-badge').className = "status-badge firing";
+      }
+    }
+
+    // Trigger de Escalado Manual
+    async function triggerManualScale(direction) {
+      if (cooldownTimer > 0) return;
+      
+      const btnUp = document.getElementById('btn-scale-up');
+      const btnDown = document.getElementById('btn-scale-down');
+      
+      btnUp.disabled = true;
+      btnDown.disabled = true;
+      
+      try {
+        const response = await fetch(`/scale/${direction}`, { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.status === "scaled") {
+          // Iniciar cooldown visual inmediatamente según la respuesta
+          fetchMetrics();
+        } else if (result.status === "cooldown") {
+          fetchMetrics();
+        } else {
+          alert(`Acción no realizada: ${result.status}`);
+          fetchMetrics();
+        }
+      } catch (err) {
+        console.error("Fallo al disparar escalado manual:", err);
+        fetchMetrics();
+      }
+    }
+
+    // Intervalo de Actualización de Métricas (Cada 3 segundos)
+    fetchMetrics();
+    setInterval(fetchMetrics, 3000);
+  </script>
+</body>
+</html>
