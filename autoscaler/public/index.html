@@ -483,16 +483,41 @@
           queueList.innerHTML = `<div class="alert-empty">No hay colas de RabbitMQ activas</div>`;
         }
 
+        // Helper para calcular hace cuanto tiempo
+        function timeAgo(dateString) {
+          const now = new Date();
+          const starts = new Date(dateString);
+          const diffMs = now - starts;
+          const diffSecs = Math.max(0, Math.floor(diffMs / 1000));
+          if (diffSecs < 60) return `hace ${diffSecs}s`;
+          const diffMins = Math.floor(diffSecs / 60);
+          if (diffMins < 60) return `hace ${diffMins}m`;
+          const diffHrs = Math.floor(diffMins / 60);
+          return `hace ${diffHrs}h`;
+        }
+
+        // Helper para formatear hora
+        function formatAlertTime(dateString) {
+          const date = new Date(dateString);
+          return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
+        }
+
         // ─── Renderizar Feed de Alertas Activas ───
         const alertList = document.getElementById('alertmanager-feed-list');
         if (Array.isArray(data.alerts) && data.alerts.length > 0) {
-          alertList.innerHTML = data.alerts.map(a => `
+          // Tomar las ultimas 10 alertas
+          const recentAlerts = data.alerts.slice(0, 10);
+          alertList.innerHTML = recentAlerts.map(a => `
             <div class="alert-item ${a.severity === 'critical' ? 'critical' : ''}">
               <div class="alert-item-header">
                 <span>⚠️ ${a.name}</span>
                 <span style="text-transform: uppercase; font-size: 0.75rem; color: ${a.severity === 'critical' ? 'var(--color-danger)' : 'var(--color-warning)'}">${a.severity}</span>
               </div>
               <div class="alert-item-desc">${a.summary}</div>
+              <div class="alert-item-time">
+                <span>Emitida: ${formatAlertTime(a.startsAt)}</span>
+                <span style="font-weight: 500; color: var(--color-warning);">${timeAgo(a.startsAt)}</span>
+              </div>
             </div>
           `).join('');
         } else {

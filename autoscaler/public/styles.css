@@ -646,8 +646,9 @@ tr:hover td {
   flex-direction: column;
   gap: 0.8rem;
   margin-top: 1rem;
-  max-height: 250px;
+  height: 350px; /* Altura estática para alojar múltiples alertas con scrollbar */
   overflow-y: auto;
+  padding-right: 0.25rem;
 }
 
 .alert-item {
@@ -676,6 +677,17 @@ tr:hover td {
   color: var(--text-muted);
   font-size: 0.8rem;
 }
+
+.alert-item-time {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  padding-top: 0.4rem;
+}
+
 
 .alert-empty {
   color: var(--text-muted);
