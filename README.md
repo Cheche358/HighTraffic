@@ -5,7 +5,7 @@
 <h1 align="center">🚀 High Traffic Light</h1>
 
 <p align="center">
-  Problema real de producción y su resolución mediante escalado horizontal, procesamiento asíncrono y almacenamiento en caché de alta velocidad.
+  Solucion de escalado horizontal self-hosted para un único servidor, que maximiza la capacidad y la elasticidad de esa instancia con réplicas dinámicas, balanceo, caché y colas sin la complejidad ni el overhead de Kubernetes.
 </p>
 
 <p align="center">
@@ -195,13 +195,13 @@ Para responder de manera inteligente ante picos inesperados de tráfico sin desp
 
 Esta arquitectura está diseñada para ser ágil y ligera (**"Light"**), utilizando **Docker Swarm**. A continuación se detalla la comparativa técnica para evaluar cuándo mantener este enfoque o migrar a Kubernetes:
 
-| Característica            | Enfoque "Light" (Docker Swarm)                                                         | Enfoque "Enterprise" (Kubernetes)                                                         |
-| :------------------------ | :------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------- |
-| **Complejidad Base**      | **Extremadamente Baja**. Curva de aprendizaje mínima para desarrolladores.             | **Alta**. Requiere un equipo o rol especializado de Platform / DevOps.                    |
-| **Uso de Recursos (RAM)** | **Mínimo (~50MB)**. No consume casi recursos del sistema en reposo.                    | **Alto (~1.5GB a 2GB)** de consumo de base para el plano de control (Kubelet, API, etc.). |
+| Característica            | Enfoque "Light" (Docker Swarm)                                                                    | Enfoque "Enterprise" (Kubernetes)                                                         |
+| :------------------------ | :------------------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------- |
+| **Complejidad Base**      | **Extremadamente Baja**. Curva de aprendizaje mínima para desarrolladores.                        | **Alta**. Requiere un equipo o rol especializado de Platform / DevOps.                    |
+| **Uso de Recursos (RAM)** | **Mínimo (~50MB)**. No consume casi recursos del sistema en reposo.                               | **Alto (~1.5GB a 2GB)** de consumo de base para el plano de control (Kubelet, API, etc.). |
 | **Escalado Dinámico**     | **Automático y Elástico** (mediante Prometheus + Autoscaler Webhook con políticas anti-flapping). | **Automático y Reactivo** (HPA basado en CPU/RAM o longitud de colas con KEDA).           |
-| **Health Checks**         | **Básico** (Verifica el estado del servicio en el host).                               | **Avanzado** (Readiness/Liveness Probes, retira pods inestables de inmediato).            |
-| **Entornos**              | Excelente para servidores dedicados individuales o clústeres pequeños-medianos.        | Estándar para nubes públicas multi-nodo con servicios gestionados (EKS, GKE, AKS).        |
+| **Health Checks**         | **Básico** (Verifica el estado del servicio en el host).                                          | **Avanzado** (Readiness/Liveness Probes, retira pods inestables de inmediato).            |
+| **Entornos**              | Excelente para servidores dedicados individuales o clústeres pequeños-medianos.                   | Estándar para nubes públicas multi-nodo con servicios gestionados (EKS, GKE, AKS).        |
 
 ### Conclusión de Implementación
 

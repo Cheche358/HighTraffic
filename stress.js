@@ -4,7 +4,7 @@ import { check, sleep } from "k6";
 export const options = {
   discardResponseBodies: true,         // Evita almacenar en memoria local los cuerpos de respuesta (maximiza RPS del host)
   stages: [
-    { duration: "10s", target: 1500 },  // Rampa de subida rápida a 1000 VUs
+    { duration: "10s", target: 1500 },  // Rampa de subida rápida a 1500 VUs
     { duration: "25s", target: 1500 },  // Sostener tráfico pesado para forzar el autoescalado
     { duration: "10s", target: 0 },     // Rampa de bajada
   ],
