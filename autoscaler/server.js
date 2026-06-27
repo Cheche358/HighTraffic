@@ -5,6 +5,18 @@ const { execSync, exec } = require("child_process");
 const util = require("util");
 const execPromise = util.promisify(exec);
 
+const DB_PATH = path.join(__dirname, "data", "alerts-history.json");
+
+// Asegurar que la carpeta de la base de datos local JSON existe
+try {
+  const dir = path.dirname(DB_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+} catch (err) {
+  console.error("[ERROR] No se pudo crear directorio de base de datos:", err.message);
+}
+
 // ─── Configuración desde Variables de Entorno ───
 const PORT = parseInt(process.env.SCALER_PORT || "9099", 10);
 const SERVICE_NAME = process.env.SCALE_SERVICE || "hightraffic_api";
@@ -261,10 +273,38 @@ function scaleService(direction) {
 
 let alertHistoryLog = [];
 
-// Procesar alertas y mantener el log en el backend
+// Cargar historial de alertas desde disco al arrancar
+function loadAlertsFromDB() {
+  try {
+    if (fs.existsSync(DB_PATH)) {
+      const raw = fs.readFileSync(DB_PATH, "utf-8");
+      alertHistoryLog = JSON.parse(raw) || [];
+      console.log(`[DB LOADED] Cargadas ${alertHistoryLog.length} alertas desde el historial persistido.`);
+    }
+  } catch (err) {
+    console.error("[DB ERROR] Fallo al cargar historial de alertas:", err.message);
+    alertHistoryLog = [];
+  }
+}
+
+// Persistir historial de alertas a disco
+function saveAlertsToDB() {
+  try {
+    fs.writeFileSync(DB_PATH, JSON.stringify(alertHistoryLog, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[DB ERROR] Fallo al persistir historial de alertas:", err.message);
+  }
+}
+
+// Inicializar la carga
+loadAlertsFromDB();
+
+// Procesar alertas y mantener el log persistido
 function processAlertsHistory(activeAlerts) {
   if (!Array.isArray(activeAlerts)) return;
   
+  let changed = false;
+
   // 1. Añadir nuevas alertas al historial si no existen
   activeAlerts.forEach(a => {
     const exists = alertHistoryLog.find(h => h.name === a.name && h.startsAt === a.startsAt);
@@ -277,6 +317,7 @@ function processAlertsHistory(activeAlerts) {
         resolved: false,
         resolvedAt: null
       });
+      changed = true;
     }
   });
 
@@ -287,6 +328,7 @@ function processAlertsHistory(activeAlerts) {
       if (!stillActive) {
         h.resolved = true;
         h.resolvedAt = new Date().toISOString();
+        changed = true;
       }
     }
   });
@@ -294,6 +336,12 @@ function processAlertsHistory(activeAlerts) {
   // 3. Limitar historial a las últimas 50 alertas
   if (alertHistoryLog.length > 50) {
     alertHistoryLog.length = 50;
+    changed = true;
+  }
+
+  // 4. Guardar cambios si hubo novedades
+  if (changed) {
+    saveAlertsToDB();
   }
 }
 
@@ -354,8 +402,8 @@ const server = http.createServer(async (req, res) => {
     // Consultar CPU Promedio y volumen de solicitudes (red) a Prometheus
     const cpuQuery = `avg(docker_container_cpu_usage_percent{com_docker_swarm_service_name="${SERVICE_NAME}"})`;
     
-    // Tasa de bytes de red recibidos en la API como métrica de Traefik/tránsito
-    const trafficQuery = `sum(rate(docker_container_net_rx_bytes{container_label_com_docker_swarm_service_name="${SERVICE_NAME}"}[1m]))`;
+    // Tasa de bytes de red RX+TX del gateway Traefik (label correcto de Telegraf: container_name)
+    const trafficQuery = `sum(rate(docker_container_net_rx_bytes{container_name=~"hightraffic_traefik.*"}[1m])) + sum(rate(docker_container_net_tx_bytes{container_name=~"hightraffic_traefik.*"}[1m]))`;
 
     const [cpuResult, trafficResult, rabbitData, alertData] = await Promise.all([
       queryPrometheus(cpuQuery),
