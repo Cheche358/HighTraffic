@@ -296,3 +296,128 @@ button:disabled {
     box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
   }
 }
+
+/* Tablas de Contenedores */
+.table-wrapper {
+  overflow-x: auto;
+  margin-top: 1rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+th {
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+  border-bottom: 2px solid var(--border-color);
+}
+
+td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  font-family: var(--font-body);
+}
+
+tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.badge-running {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--color-success);
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* RabbitMQ Queue Styles */
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  margin-top: 1rem;
+}
+
+.queue-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.queue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.queue-name {
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.queue-stats-mini {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+.queue-stat-value {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+/* Feed de Alertas */
+.alert-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.alert-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.8rem;
+  border-radius: 8px;
+  border-left: 4px solid var(--color-warning);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 0.85rem;
+}
+
+.alert-item.critical {
+  border-left-color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.alert-item-header {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.alert-item-desc {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.alert-empty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1rem;
+}
+

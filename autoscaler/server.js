@@ -44,6 +44,128 @@ function queryPrometheus(query) {
   });
 }
 
+// Helper para consultar la API de RabbitMQ
+function queryRabbitMQ() {
+  return new Promise((resolve) => {
+    const auth = 'Basic ' + Buffer.from('guest:guest').toString('base64');
+    const options = {
+      hostname: 'rabbitmq',
+      port: 15672,
+      path: '/api/queues',
+      method: 'GET',
+      headers: {
+        'Authorization': auth
+      },
+      timeout: 2000
+    };
+
+    const req = http.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (Array.isArray(parsed)) {
+            const queues = parsed.map(q => ({
+              name: q.name,
+              messages: q.messages || 0,
+              messages_ready: q.messages_ready || 0,
+              messages_unacknowledged: q.messages_unacknowledged || 0,
+              publish_rate: q.message_stats && q.message_stats.publish_details ? q.message_stats.publish_details.rate : 0,
+              deliver_rate: q.message_stats && q.message_stats.deliver_details ? q.message_stats.deliver_details.rate : 0
+            }));
+            resolve(queues);
+          } else {
+            resolve([]);
+          }
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+
+    req.on("error", () => {
+      resolve([]);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve([]);
+    });
+    req.end();
+  });
+}
+
+// Helper para consultar la API de Alertmanager
+function queryAlertmanager() {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'alertmanager',
+      port: 9093,
+      path: '/api/v2/alerts',
+      method: 'GET',
+      timeout: 2000
+    };
+
+    const req = http.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (Array.isArray(parsed)) {
+            const alerts = parsed.map(a => ({
+              name: a.labels.alertname,
+              state: a.status.state,
+              severity: a.labels.severity || 'warning',
+              summary: a.annotations.summary || '',
+              startsAt: a.startsAt
+            }));
+            resolve(alerts);
+          } else {
+            resolve([]);
+          }
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+
+    req.on("error", () => {
+      resolve([]);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve([]);
+    });
+    req.end();
+  });
+}
+
+// Helper para obtener docker stats de forma local
+function getDockerStats() {
+  try {
+    const output = execSync(
+      `docker stats --no-stream --format "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}"`,
+      { encoding: "utf-8", timeout: 8000 }
+    ).trim();
+
+    if (!output) return [];
+
+    return output.split("\n").map(line => {
+      const parts = line.split("|");
+      return {
+        name: parts[0] || "unknown",
+        cpu: parts[1] || "0.00%",
+        memory: parts[2] || "0.00MiB / 0.00MiB",
+        net: parts[3] || "0.00B / 0.00B"
+      };
+    }).filter(c => c.name.startsWith("hightraffic_"));
+  } catch (err) {
+    console.error(`[ERROR] No se pudo obtener docker stats:`, err.message);
+    return [];
+  }
+}
+
 // ─── Obtener Réplicas Actuales ───
 function getCurrentReplicas() {
   try {
@@ -150,13 +272,17 @@ const server = http.createServer(async (req, res) => {
     const elapsed = (now - lastScaleTime) / 1000;
     const cooldownRemaining = lastScaleTime > 0 ? Math.max(0, Math.ceil(COOLDOWN_SECONDS - elapsed)) : 0;
 
-    // Consultar CPU Promedio y estado de Alertas a Prometheus
+    // Consultar CPU Promedio y volumen de solicitudes (red) a Prometheus
     const cpuQuery = `avg(docker_container_cpu_usage_percent{com_docker_swarm_service_name="${SERVICE_NAME}"})`;
-    const alertQuery = `ALERTS{alertname="APIOverloaded",alertstate="firing"}`;
+    
+    // Tasa de bytes de red recibidos en la API como métrica de Traefik/tránsito
+    const trafficQuery = `sum(rate(docker_container_net_rx_bytes{container_label_com_docker_swarm_service_name="${SERVICE_NAME}"}[1m]))`;
 
-    const [cpuResult, alertResult] = await Promise.all([
+    const [cpuResult, trafficResult, rabbitData, alertData] = await Promise.all([
       queryPrometheus(cpuQuery),
-      queryPrometheus(alertQuery)
+      queryPrometheus(trafficQuery),
+      queryRabbitMQ(),
+      queryAlertmanager()
     ]);
 
     let cpuUsage = 0;
@@ -164,7 +290,19 @@ const server = http.createServer(async (req, res) => {
       cpuUsage = parseFloat(cpuResult[0].value[1]) || 0;
     }
 
-    const isAlertFiring = alertResult.length > 0;
+    let networkTraffic = 0;
+    if (trafficResult.length > 0 && trafficResult[0].value) {
+      networkTraffic = parseFloat(trafficResult[0].value[1]) || 0; // Bytes/seg
+    }
+
+    // Convertir bytes a un formato legible (KB/s)
+    const trafficKb = networkTraffic / 1024;
+
+    // Obtener las estadísticas locales de contenedores
+    const containers = getDockerStats();
+
+    // Determinar estado de alerta del badge local
+    const isAlertFiring = alertData.some(a => a.name === "APIOverloaded" && a.state === "firing");
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
@@ -175,9 +313,13 @@ const server = http.createServer(async (req, res) => {
       cooldown_seconds: COOLDOWN_SECONDS,
       cooldown_remaining: cooldownRemaining,
       cpu_usage: parseFloat(cpuUsage.toFixed(2)),
+      traffic_rate_kb: parseFloat(trafficKb.toFixed(2)),
       alert_status: isAlertFiring ? "firing" : "ok",
       scale_up_by: SCALE_UP_BY,
-      scale_down_by: SCALE_DOWN_BY
+      scale_down_by: SCALE_DOWN_BY,
+      queues: rabbitData,
+      alerts: alertData,
+      containers: containers
     }));
     return;
   }

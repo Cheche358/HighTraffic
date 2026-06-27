@@ -113,8 +113,8 @@ services:
 
 networks:
   default:
-    name: ht_net_v3
+    name: ht_net_v5
     driver: overlay
     ipam:
       config:
-        - subnet: 10.99.0.0/16
+        - subnet: 172.30.0.0/16

@@ -23,7 +23,7 @@
   </header>
 
   <main>
-    <!-- Left Section: Metrics & Chart -->
+    <!-- Left Section: Metrics, Chart, and Container Table -->
     <section class="dashboard-content">
       
       <div class="metric-grid">
@@ -37,32 +37,55 @@
 
         <!-- CPU Card -->
         <article class="card">
-          <h2 class="card-title">CPU Promedio</h2>
+          <h2 class="card-title">CPU Promedio (Telegraf)</h2>
           <div class="card-value" id="metrics-cpu">
             0.0<span class="card-unit">%</span>
           </div>
         </article>
 
-        <!-- Cooldown Card -->
+        <!-- Traefik Network Card -->
         <article class="card">
-          <h2 class="card-title">Estado de Cooldown</h2>
-          <div class="card-value" id="metrics-cooldown-value" style="font-size: 1.8rem; height: 100%; display: flex; align-items: center;">
-            Listo
+          <h2 class="card-title">Tránsito Red (Traefik)</h2>
+          <div class="card-value" id="metrics-traffic">
+            0.00 <span class="card-unit">KB/s</span>
           </div>
         </article>
       </div>
 
       <!-- Live Chart Card -->
-      <article class="card chart-container">
+      <article class="card chart-container" style="margin-bottom: 2rem;">
         <h2 class="card-title">Histórico de Carga de CPU (Telegraf)</h2>
         <div class="chart-wrapper">
           <canvas id="cpuChart"></canvas>
         </div>
       </article>
 
+      <!-- Containers Table Card -->
+      <article class="card">
+        <h2 class="card-title">Contenedores Activos (docker stats)</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Contenedor</th>
+                <th>CPU (%)</th>
+                <th>Memoria Utilizada</th>
+                <th>Red I/O</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody id="container-table-body">
+              <tr>
+                <td colspan="5" style="text-align: center; color: var(--text-muted);">Cargando contenedores...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
     </section>
 
-    <!-- Right Section: Controls & Configuration -->
+    <!-- Right Section: Controls, RabbitMQ, and Alertmanager -->
     <aside class="control-sidebar">
       
       <!-- Scaling Actions -->
@@ -76,19 +99,30 @@
             Desescalar API (-1)
           </button>
         </div>
-      </article>
-
-      <!-- Cooldown visual progress -->
-      <article class="card">
-        <h2 class="card-title">Enfriamiento (Cooldown)</h2>
-        <div class="cooldown-indicator">
+        <div style="margin-top: 1rem;" class="cooldown-indicator">
           <div class="cooldown-bar-bg">
             <div id="cooldown-progress" class="cooldown-bar-fill"></div>
           </div>
           <div class="cooldown-text">
             <span id="cooldown-timer-text">Disponible</span>
-            <span id="cooldown-max-text">120s</span>
+            <span id="cooldown-timer-val">Listo</span>
           </div>
+        </div>
+      </article>
+
+      <!-- RabbitMQ Queues Monitor -->
+      <article class="card">
+        <h2 class="card-title">Colas de RabbitMQ</h2>
+        <div class="queue-list" id="rabbitmq-queue-list">
+          <div class="alert-empty">Cargando datos de colas...</div>
+        </div>
+      </article>
+
+      <!-- Alertmanager Feed -->
+      <article class="card">
+        <h2 class="card-title">Alertas Activas (Alertmanager)</h2>
+        <div class="alert-feed" id="alertmanager-feed-list">
+          <div class="alert-empty">No hay alertas activas</div>
         </div>
       </article>
 
@@ -97,16 +131,8 @@
         <h2 class="card-title">Parámetros (.env)</h2>
         <div class="detail-list">
           <div class="detail-item">
-            <span class="detail-label">Servicio objetivo:</span>
-            <span class="detail-value" id="config-service">hightraffic_api</span>
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Réplicas mínimas:</span>
-            <span class="detail-value" id="config-min-replicas">5</span>
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Réplicas máximas:</span>
-            <span class="detail-value" id="config-max-replicas">15</span>
+            <span class="detail-label">Mínimo / Máximo:</span>
+            <span class="detail-value"><span id="config-min-replicas">5</span> / <span id="config-max-replicas">15</span></span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Paso de subida (Up):</span>
@@ -190,27 +216,22 @@
     function updateCooldownUI() {
       const fill = document.getElementById('cooldown-progress');
       const text = document.getElementById('cooldown-timer-text');
-      const maxText = document.getElementById('cooldown-max-text');
-      const cooldownValue = document.getElementById('metrics-cooldown-value');
-      
-      maxText.textContent = `${cooldownTotal}s`;
+      const timerVal = document.getElementById('cooldown-timer-val');
       
       if (cooldownTimer > 0) {
         const percent = (cooldownTimer / cooldownTotal) * 100;
         fill.style.width = `${percent}%`;
-        text.textContent = `Enfriamiento: ${cooldownTimer}s`;
-        cooldownValue.textContent = `${cooldownTimer}s`;
-        cooldownValue.style.color = 'var(--color-warning)';
+        text.textContent = 'Enfriamiento activo';
+        timerVal.textContent = `${cooldownTimer}s`;
+        timerVal.style.color = 'var(--color-warning)';
         
         document.getElementById('btn-scale-up').disabled = true;
         document.getElementById('btn-scale-down').disabled = true;
       } else {
         fill.style.width = '0%';
         text.textContent = 'Disponible';
-        cooldownValue.textContent = 'Listo';
-        cooldownValue.style.color = 'var(--color-success)';
-        
-        // El estado de habilitado se definirá según los límites de réplicas en fetchMetrics
+        timerVal.textContent = 'Listo';
+        timerVal.style.color = 'var(--color-success)';
       }
     }
 
@@ -225,9 +246,9 @@
         // Actualizar Valores de Tarjetas
         document.getElementById('metrics-replicas').innerHTML = `${data.replicas} <span class="card-unit">/ ${data.max}</span>`;
         document.getElementById('metrics-cpu').innerHTML = `${data.cpu_usage.toFixed(1)}<span class="card-unit">%</span>`;
+        document.getElementById('metrics-traffic').innerHTML = `${data.traffic_rate_kb.toFixed(2)} <span class="card-unit">KB/s</span>`;
         
         // Actualizar Detalles de Configuración
-        document.getElementById('config-service').textContent = data.service;
         document.getElementById('config-min-replicas').textContent = data.min;
         document.getElementById('config-max-replicas').textContent = data.max;
         document.getElementById('config-scale-up').textContent = data.scale_up_by;
@@ -255,6 +276,59 @@
         } else {
           badge.textContent = "Sistema Estable";
           badge.className = "status-badge";
+        }
+
+        // ─── Renderizar Contenedores Activos ───
+        const tableBody = document.getElementById('container-table-body');
+        if (Array.isArray(data.containers) && data.containers.length > 0) {
+          tableBody.innerHTML = data.containers.map(c => `
+            <tr>
+              <td><strong>${c.name}</strong></td>
+              <td>${c.cpu}</td>
+              <td>${c.memory}</td>
+              <td>${c.net}</td>
+              <td><span class="badge-running">Running</span></td>
+            </tr>
+          `).join('');
+        } else {
+          tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No se detectaron contenedores activos</td></tr>`;
+        }
+
+        // ─── Renderizar Colas RabbitMQ ───
+        const queueList = document.getElementById('rabbitmq-queue-list');
+        if (Array.isArray(data.queues) && data.queues.length > 0) {
+          queueList.innerHTML = data.queues.map(q => `
+            <div class="queue-item">
+              <div class="queue-header">
+                <span class="queue-name">📥 ${q.name}</span>
+                <span class="badge-running" style="background: rgba(99, 102, 241, 0.1); color: var(--color-primary);">${q.messages} msgs</span>
+              </div>
+              <div class="queue-stats-mini">
+                <div>Ready: <span class="queue-stat-value">${q.messages_ready}</span></div>
+                <div>Unack: <span class="queue-stat-value">${q.messages_unacknowledged}</span></div>
+                <div>Entrada: <span class="queue-stat-value">${q.publish_rate.toFixed(1)}/s</span></div>
+                <div>Salida: <span class="queue-stat-value">${q.deliver_rate.toFixed(1)}/s</span></div>
+              </div>
+            </div>
+          `).join('');
+        } else {
+          queueList.innerHTML = `<div class="alert-empty">No hay colas de RabbitMQ activas</div>`;
+        }
+
+        // ─── Renderizar Feed de Alertas Activas ───
+        const alertList = document.getElementById('alertmanager-feed-list');
+        if (Array.isArray(data.alerts) && data.alerts.length > 0) {
+          alertList.innerHTML = data.alerts.map(a => `
+            <div class="alert-item ${a.severity === 'critical' ? 'critical' : ''}">
+              <div class="alert-item-header">
+                <span>⚠️ ${a.name}</span>
+                <span style="text-transform: uppercase; font-size: 0.75rem; color: ${a.severity === 'critical' ? 'var(--color-danger)' : 'var(--color-warning)'}">${a.severity}</span>
+              </div>
+              <div class="alert-item-desc">${a.summary}</div>
+            </div>
+          `).join('');
+        } else {
+          alertList.innerHTML = `<div class="alert-empty">No hay alertas activas en el clúster</div>`;
         }
 
         // Actualizar Histórico del Gráfico
@@ -290,7 +364,6 @@
         const result = await response.json();
         
         if (result.status === "scaled") {
-          // Iniciar cooldown visual inmediatamente según la respuesta
           fetchMetrics();
         } else if (result.status === "cooldown") {
           fetchMetrics();
