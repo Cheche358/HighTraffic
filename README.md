@@ -139,16 +139,30 @@ docker stack rm hightraffic
 ### 2. Panel de Control y URLs Locales
 
 - **Endpoint del Servidor**: [http://localhost](http://localhost)
+- **Web Panel de Control**: [http://localhost:9099](http://localhost:9099) (Panel unificado de monitoreo y escalado)
 - **Dashboard de Traefik**: [http://localhost:8081](http://localhost:8081)
 - **Panel de RabbitMQ**: [http://localhost:15672](http://localhost:15672) (Usuario: `guest` / Contraseña: `guest`)
 
 ### 3. Ejecutar Prueba de Estrés (k6)
 
-Para iniciar la simulación de carga masiva de usuarios concurrentes:
+El script `stress.js` simula una avalancha de usuarios concurrentes contra el endpoint público (`http://127.0.0.1`, puerto 80) para forzar el autoescalado y validar el comportamiento elástico del clúster.
+
+**¿Qué hace el test?**
+
+- **Curva de carga en 3 etapas**: rampa de subida hasta el máximo de VUs (usuarios virtuales), sostiene la carga para disparar el escalado y, finalmente, rampa de bajada. Los valores se ajustan en `stress.js` → `options.stages`.
+- **Tráfico mixto 50/50**: la mitad de las peticiones usan `?nocache=` (fuerzan un *cache miss* → respuesta `202 Accepted` y encolamiento en RabbitMQ) y la otra mitad van a la URL plana `/` (resuelven desde caché → `200 OK`). Esto reproduce tráfico realista de usuarios nuevos vs. recurrentes.
+- **Lotes por iteración**: cada iteración envía 2 peticiones concurrentes, maximizando el RPS del host.
+- **Validación automática**: verifica que cada respuesta sea `200` (cache hit) o `202` (encolada), y marca el test como fallido si la tasa de errores supera el umbral configurado (`http_req_failed`).
+
+Para iniciar la simulación:
 
 ```bash
 k6 run stress.js
 ```
+
+Durante la ejecución puedes observar en el [Web Panel](http://localhost:9099) cómo suben las réplicas, el consumo de CPU, el tráfico de red de Traefik y el crecimiento de la cola de RabbitMQ.
+
+> **Nota:** si vas a lanzar el test desde Windows (Docker Desktop), ajusta el `target` de VUs a un valor moderado (ej. 300-600) para no saturar el daemon local. Consulta las recomendaciones por hardware en el [DEPLOYMENT.md](file:///d:/Users/windows/Proyectos/HighTraffic/DEPLOYMENT.md).
 
 ---
 
@@ -164,10 +178,6 @@ k6 run stress.js
 ## 📈 Autoescalado Dinámico y Elástico (Estilo Kubernetes en Swarm)
 
 Para responder de manera inteligente ante picos inesperados de tráfico sin desperdiciar recursos de hardware, hemos diseñado e implementado una arquitectura de **Autoescalado Dinámico Automatizado** combinando **Telegraf**, **Prometheus**, **Alertmanager** y un **Autoscaler Webhook** ligero (servicio Node.js propio que ejecuta `docker service scale` directamente sobre el socket de Docker).
-
-> **Nota de diseño:** Originalmente el stack usaba [cAdvisor](https://github.com/google/cadvisor) como recolector de métricas de contenedores, pero se reemplazó por **Telegraf** (InfluxData) por dos motivos: cAdvisor lleva sin actualizarse desde 2023 (riesgo de deprecación, mismo problema que tuvo Orbiter), y consulta `/sys/fs/cgroup` directamente, lo que no funciona en Docker Desktop (Windows/Mac). Telegraf en cambio consulta la **API de Docker** (`/containers/stats`), por lo que recolecta métricas reales de CPU tanto en Linux como en Docker Desktop, y está activamente mantenido.
-
-> **Nota de diseño:** Originalmente el stack usaba [Orbiter](https://github.com/orbiterhost/orbiter) como puente entre Alertmanager y Docker Swarm. Se removió por un bug de diseño insalvable: su modo `autodetect` registra el autoscaler con una key que contiene `/` (`autoswarm/hightraffic_api`), lo que rompe el enrutamiento de gorilla/mux; además el flag `--config` no existe, por lo que no era posible cargar configuración estática. El webhook Node.js actual replica su comportamiento (cooldown, límites min/max, políticas anti-flapping) sin esa dependencia.
 
 ### Cualidades y Características Clave
 
@@ -188,6 +198,38 @@ Para responder de manera inteligente ante picos inesperados de tráfico sin desp
    - **Alertmanager** (Puerto `9093`): Para rastrear la entrega de notificaciones de escala al autoscaler.
    - **Telegraf** (Puerto `9273`): Recolector de métricas de contenedores; expone `/metrics` en formato Prometheus.
    - **Autoscaler Webhook** (Puerto `9099`): Endpoints de diagnóstico — `GET /health` (estado del servicio y réplicas actuales) y `POST /scale/up|down` (escalado manual).
+
+---
+
+## 🖥️ Web Panel de Control y Monitoreo
+
+El proyecto incluye un **panel web unificado** (servido por el propio Autoscaler en el puerto `9099`) que centraliza la observabilidad y el control del clúster en una sola interfaz, sin necesidad de herramientas externas. Se actualiza automáticamente cada 3 segundos y está diseñado para seguir siendo legible incluso bajo carga extrema.
+
+### Características y Bondades
+
+1. **Tarjetas de Métricas Globales**:
+   - **Réplicas del Servicio**: instancias activas vs. límite máximo configurado.
+   - **CPU Promedio**: uso real de CPU expresado como **% del host** (normalizado por núcleos), veraz y coherente entre el card superior, el gráfico y los contenedores individuales.
+   - **Tránsito de Red (Traefik)**: throughput del gateway en `KB/s` medido en tiempo real.
+
+2. **Histórico de Carga de CPU**: gráfico de líneas en vivo (Chart.js) con la evolución del consumo, útil para visualizar picos y la respuesta del autoescalado.
+
+3. **Visor de Contenedores por Réplica**:
+   - Cards individuales para cada **réplica de la API** y cada **módulo de sistema** (Traefik, Redis, RabbitMQ, Prometheus, Alertmanager, Telegraf, Autoscaler).
+   - Barras de **CPU**, **memoria** (con referencia visual por servicio) y **tránsito de red I/O** (entrada/salida) por contenedor.
+   - Modal de detalle con el nombre técnico (Swarm), ID e imagen de cada contenedor.
+
+4. **Acciones de Escalado Manual**: botones para escalar (`+SCALE_UP_BY`) y desescalar (`-SCALE_DOWN_BY`) en caliente, con un **indicador visual de cooldown** (barra + cuenta regresiva) que refleja el estado real del autoscaler.
+
+5. **Monitor de Colas de RabbitMQ**: mensajes totales, listos (ready), no confirmados (unacked) y tasas de entrada/salida por cola.
+
+6. **Feed de Alertas Persistente**: historial de alertas de Alertmanager que **sobrevive a refrescos del navegador**, mostrando estado (activa/resuelta), severidad, resumen y marca temporal.
+
+7. **Parámetros de Configuración (.env)**: visualización en vivo de los límites min/max y los pasos de escalado actuales.
+
+8. **Resiliencia Operativa**: ante fallos transitorios del daemon de Docker bajo carga (respuestas vacías o caídas de `/api/metrics`), el panel **conserva el último estado renderizado** en lugar de parpadear con "sin contenedores", manteniendo la operación estable.
+
+> El panel es totalmente **compatible con Windows (Docker Desktop) y Linux nativo**: todas sus métricas provienen de fuentes multiplataforma (`os.cpus()`, la API de Docker vía `docker stats` y Telegraf).
 
 ---
 
