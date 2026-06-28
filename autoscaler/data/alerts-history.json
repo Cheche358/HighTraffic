@@ -3,6 +3,14 @@
     "name": "APIUnderutilized",
     "severity": "warning",
     "summary": "API Service is underutilized, scaling down.",
+    "startsAt": "2026-06-27T22:43:17.633Z",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "name": "APIUnderutilized",
+    "severity": "warning",
+    "summary": "API Service is underutilized, scaling down.",
     "startsAt": "2026-06-27T22:26:37.633Z",
     "resolved": true,
     "resolvedAt": "2026-06-27T22:30:52.749Z"

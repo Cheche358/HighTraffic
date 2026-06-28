@@ -324,3 +324,78 @@ Para evitar inestabilidades y fluctuaciones constantes de red en producción, se
 1. **Retardo Asimétrico**: El escalado ascendente (Up) se dispara en **30 segundos** ante un pico de CPU > 70% para salvaguardar la experiencia del usuario. En cambio, el desescalado (Down) requiere que la CPU caiga por debajo del 25% de forma continua durante **5 minutos** completos antes de retirar réplicas.
 2. **Período de Enfriamiento**: El Autoscaler Webhook bloquea cualquier nuevo cambio de escala durante el `SCALE_COOLDOWN` (default: `120s`) después de cada escalado.
 3. **Suelo de Contención**: La escala nunca caerá por debajo de `API_REPLICAS_MIN` (5 réplicas base de alta disponibilidad).
+
+---
+
+## 🖥️ 9. Web Panel de Control y Monitoreo (Puerto `9099`)
+
+El Autoscaler expone además un **panel web unificado** accesible en el **puerto `9099`** (`http://<servidor>:9099`) que funciona como centro de observabilidad y control del clúster. Se sirve como aplicación estática desde el propio servicio del Autoscaler y se actualiza automáticamente cada 3 segundos consultando el endpoint `/api/metrics`.
+
+### 📊 Funcionalidades
+
+1. **Métricas Globales en Tiempo Real**:
+   - Réplicas activas vs. máximo (`API_REPLICAS_MAX`).
+   - CPU promedio como **% del host** (normalizado por la cantidad de núcleos, para una escala veraz 0-100%).
+   - Tasa de tráfico de red del gateway Traefik en `KB/s`.
+
+2. **Gráfico Histórico de CPU**: evolución del consumo en vivo para detectar picos y verificar la respuesta elástica del clúster.
+
+3. **Cards por Contenedor**: estado individual de cada réplica de la API y de cada módulo del sistema (Traefik, Redis, RabbitMQ, Prometheus, Alertmanager, Telegraf, Autoscaler), con barras de **CPU**, **memoria** y **tránsito de red I/O**.
+
+4. **Control de Escalado Manual**: botones para escalar/desescalar en caliente, sincronizados con el cooldown real del Autoscaler (barra de progreso + cuenta regresiva).
+
+5. **Monitor de Colas RabbitMQ**: profundidad de cola y tasas de publicación/consumo.
+
+6. **Feed de Alertas Persistente**: historial de alertas de Alertmanager almacenado en disco (`autoscaler/data/alerts-history.json`), de modo que **persiste entre reinicios y refrescos del navegador**.
+
+7. **Visor de Parámetros (.env)**: límites y pasos de escalado configurados actualmente.
+
+### 🛡️ Consideraciones de Diseño
+
+- **Resiliencia**: ante una saturación temporal del daemon de Docker (respuestas vacías o caídas de `/api/metrics` bajo carga extrema), el panel conserva el último render válido y no muestra estados intermitentes de "sin contenedores".
+- **Cálculo de CPU veraz**: el consumo se normaliza dividiendo el `% por núcleo` (reportado por `docker stats` y Telegraf) entre el número de núcleos del host, de forma que toda la interfaz usa una escala coherente de **% del host (0-100%)**.
+- **Multiplataforma**: funciona idéntico en Linux nativo y en Docker Desktop (Windows/Mac), ya que todas las fuentes de datos (`os.cpus()`, API de Docker y Telegraf) son compatibles con ambos entornos.
+
+---
+
+## 🧪 10. Pruebas de Estrés (k6): Consideraciones y Recomendaciones
+
+El script `stress.js` (ejecutable con `k6 run stress.js`) genera una carga masiva de usuarios virtuales (VUs) contra el endpoint público para forzar y validar el autoescalado. Antes de lanzarlo en producción, conviene calibrar la intensidad del test al hardware disponible para obtener mediciones realistas sin colapsar el entorno.
+
+### ⚙️ Parámetros clave a ajustar (en `stress.js`)
+
+| Parámetro | Ubicación | Qué controla |
+| :-- | :-- | :-- |
+| `target` (VUs máx.) | `options.stages` | Cantidad máxima de usuarios virtuales concurrentes. Es el principal factor de carga. |
+| `duration` | `options.stages` | Tiempo de cada etapa (subida / sostenimiento / bajada). El sostenimiento debe durar lo suficiente para disparar el escalado (`for: 30s` de la alerta + cooldown). |
+| `http_req_failed` | `options.thresholds` | Tasa máxima de errores tolerada antes de marcar el test como fallido. |
+| `sleep(...)` | `default function` | Pausa entre iteraciones; protege la tabla de sockets del host contra la saturación inmediata. |
+
+### 🎚️ Recomendación de VUs máximos según hardware
+
+La capacidad del host (núcleos/RAM) acota cuánta carga puede absorber el clúster antes de saturarse. Usar más VUs de los que el servidor puede procesar solo produce timeouts y mide la saturación de la red local, no el rendimiento real del stack. Valores de referencia:
+
+| Hardware del servidor | VUs máx. sugerido | Observaciones |
+| :-- | :-- | :-- |
+| **2 cores / 4 GB** | 200 – 400 | Mantén `API_REPLICAS_MAX` bajo (~5-6); el CPU es el cuello de botella. |
+| **4 cores / 8 GB** | 500 – 900 | Rango equilibrado; permite ver el escalado completo sin colapsar. |
+| **6 cores / 12 GB** | 900 – 1500 | Buen margen de sobresuscripción para trabajo I/O-bound. |
+| **8+ cores / 16 GB+** | 1500 – 2500+ | Ajusta `API_REPLICAS_MAX` hacia 12-15 para aprovechar los núcleos. |
+
+> **Regla práctica**: parte con un `target` bajo y sube progresivamente. El óptimo es el valor donde la tasa de error se mantiene por debajo del umbral (`http_req_failed`) y la latencia se estabiliza; si los errores se disparan, estás saturando la red/daemon, no probando la app.
+
+### ⚠️ Consideraciones al ejecutar el test
+
+1. **Entorno local (Docker Desktop / Windows)**: el daemon corre dentro de una VM ligera con recursos limitados y comparte CPU con el host. Usa VUs **moderados (300-600)** y un `sleep` de ~80-150ms para no agotar los sockets locales. Valores altos (1000+) colapsan el daemon y producen timeouts masivos que no reflejan el comportamiento de producción.
+
+2. **Duración del sostenimiento**: la etapa de carga sostenida debe durar **al menos 60-90s** para permitir que la alerta de CPU (>70% durante 30s) se dispare, Alertmanager entregue el webhook y el clúster converja con las nuevas réplicas. Un test demasiado corto puede no gatillar el escalado.
+
+3. **Tráfico mixto cache hit/miss**: el test alterna peticiones `?nocache=` (miss → encolan en RabbitMQ) y `/` plana (hit → cache). Para forzar más carga de CPU/cola, aumenta la proporción de misses; para simular tráfico más "amable", redúcela.
+
+4. **Observación durante el test**: ejecuta el test y vigila simultáneamente el [Web Panel](http://localhost:9099) para confirmar que suben las réplicas, crece la cola de RabbitMQ y aumenta el tráfico de Traefik. Tras el test, verifica que el desescalado automático reduzca las réplicas al mínimo (`API_REPLICAS_MIN`) de forma estable.
+
+5. **No mezcles pruebas con tráfico real**: el test asume que el servidor está dedicado. Si hay otros servicios compitiendo por CPU/RAM, los resultados no serán representativos.
+
+### 🔧 Ajuste conjunto con el autoescalado
+
+El `target` de VUs y `API_REPLICAS_MAX` deben calibrarse juntos: un test que no logra elevar la CPU por encima del umbral de alerta nunca disparará el escalado, mientras que un `MAX` demasiado alto para el hardware genera sobresuscripción y degradación. Valida primero el escalado con un `target` que logre saturar la CPU, y luego confirma que el clúster se estabiliza dentro de los límites configurados.
