@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HighTraffic - Web Panel Monitor</title>
+  <meta name="description" content="Panel unificado de control y monitoreo para la arquitectura distribuida de HighTraffic en Docker Swarm.">
+  <link rel="stylesheet" href="styles.css">
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <header>
+    <div class="logo-section">
+      <h1 id="panel-main-title">
+        <span>⚡</span> HighTraffic Web Panel
+      </h1>
+    </div>
+    <div id="system-status-badge" class="status-badge">
+      Monitoreando
+    </div>
+  </header>
+
+  <main>
+    <!-- Left Section: Metrics, Chart, and Container Table -->
+    <section class="dashboard-content">
+      
+      <div class="metric-grid">
+        <!-- Replicas Card -->
+        <article class="card">
+          <h2 class="card-title">Réplicas del Servicio</h2>
+          <div class="card-value" id="metrics-replicas">
+            5 <span class="card-unit">/ 15</span>
+          </div>
+        </article>
+
+        <!-- CPU Card -->
+        <article class="card">
+          <h2 class="card-title">CPU Promedio (Telegraf)</h2>
+          <div class="card-value" id="metrics-cpu">
+            0.0<span class="card-unit">%</span>
+          </div>
+        </article>
+
+        <!-- Traefik Network Card -->
+        <article class="card">
+          <h2 class="card-title">Tránsito Red (Traefik)</h2>
+          <div class="card-value" id="metrics-traffic">
+            0.00 <span class="card-unit">KB/s</span>
+          </div>
+        </article>
+      </div>
+
+      <!-- Live Chart Card -->
+      <article class="card chart-container" style="margin-bottom: 2rem;">
+        <h2 class="card-title">Histórico de Carga de CPU (Telegraf)</h2>
+        <div class="chart-wrapper">
+          <canvas id="cpuChart"></canvas>
+        </div>
+      </article>
+
+      <!-- APIs Replicadas Card -->
+      <article class="card" style="margin-bottom: 2rem;">
+        <h2 class="card-title">APIs Replicadas (hightraffic_api)</h2>
+        <div id="api-cards-grid" class="replica-cards-grid">
+          <div class="alert-empty">Cargando réplicas...</div>
+        </div>
+      </article>
+
+      <!-- Módulos de Sistema Card -->
+      <article class="card">
+        <h2 class="card-title">Infraestructura & Módulos de Sistema</h2>
+        <div id="system-cards-grid" class="replica-cards-grid">
+          <div class="alert-empty">Cargando módulos...</div>
+        </div>
+      </article>
+
+    </section>
+
+    <!-- Right Section: Controls, RabbitMQ, and Alertmanager -->
+    <aside class="control-sidebar">
+      
+      <!-- Scaling Actions -->
+      <article class="card">
+        <h2 class="card-title">Acciones de Escalado</h2>
+        <div class="btn-container">
+          <button id="btn-scale-up" class="btn-up" onclick="triggerManualScale('up')">
+            Escalar API (+2)
+          </button>
+          <button id="btn-scale-down" class="btn-down" onclick="triggerManualScale('down')">
+            Desescalar API (-1)
+          </button>
+        </div>
+        <div style="margin-top: 1rem;" class="cooldown-indicator">
+          <div class="cooldown-bar-bg">
+            <div id="cooldown-progress" class="cooldown-bar-fill"></div>
+          </div>
+          <div class="cooldown-text">
+            <span id="cooldown-timer-text">Disponible</span>
+            <span id="cooldown-timer-val">Listo</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- RabbitMQ Queues Monitor -->
+      <article class="card">
+        <h2 class="card-title">Colas de RabbitMQ</h2>
+        <div class="queue-list" id="rabbitmq-queue-list">
+          <div class="alert-empty">Cargando datos de colas...</div>
+        </div>
+      </article>
+
+      <!-- Alertmanager Feed -->
+      <article class="card">
+        <h2 class="card-title">Alertas Activas (Alertmanager)</h2>
+        <div class="alert-feed" id="alertmanager-feed-list" style="height: 540px; overflow: hidden;">
+          <div class="alert-empty">No hay alertas activas</div>
+        </div>
+      </article>
+
+      <!-- Configuration details -->
+      <article class="card">
+        <h2 class="card-title">Parámetros (.env)</h2>
+        <div class="detail-list">
+          <div class="detail-item">
+            <span class="detail-label">Mínimo / Máximo:</span>
+            <span class="detail-value"><span id="config-min-replicas">5</span> / <span id="config-max-replicas">15</span></span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Paso de subida (Up):</span>
+            <span class="detail-value" id="config-scale-up">2</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Paso de bajada (Down):</span>
+            <span class="detail-value" id="config-scale-down">1</span>
+          </div>
+        </div>
+      </article>
+
+    </aside>
+  </main>
+
+  <script>
+    // Configuración del Histórico del Gráfico
+    const MAX_CHART_POINTS = 30;
+    const cpuDataHistory = Array(MAX_CHART_POINTS).fill(0);
+    const chartLabels = Array(MAX_CHART_POINTS).fill('');
+
+    // Inicialización del Gráfico Chart.js
+    const ctx = document.getElementById('cpuChart').getContext('2d');
+    const cpuChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: chartLabels,
+        datasets: [{
+          label: 'Uso de CPU (%)',
+          data: cpuDataHistory,
+          borderColor: '#6366f1',
+          borderWidth: 2,
+          backgroundColor: 'rgba(99, 102, 241, 0.05)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 5
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: { display: false },
+          y: {
+            min: 0,
+            max: 100,
+            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+            ticks: { color: '#9ca3af' }
+          }
+        }
+      }
+    });
+
+    let cooldownTotal = 120;
+    let cooldownTimer = 0;
+    let cooldownInterval = null;
+
+    // Flag para preservar el último render de contenedores ante respuestas
+    // transitoriamente vacías (carga alta / reinicio del engine), evitando
+    // que la grilla parpadee con "sin contenedores" en cada poll.
+    let hasRenderedContainers = false;
+
+    // Ejecutar cuenta regresiva visual del Cooldown en el cliente
+    function startClientCooldown(secondsRemaining, totalSeconds) {
+      cooldownTotal = totalSeconds || 120;
+      cooldownTimer = secondsRemaining;
+      
+      if (cooldownInterval) clearInterval(cooldownInterval);
+      
+      updateCooldownUI();
+      
+      cooldownInterval = setInterval(() => {
+        cooldownTimer--;
+        if (cooldownTimer <= 0) {
+          cooldownTimer = 0;
+          clearInterval(cooldownInterval);
+        }
+        updateCooldownUI();
+      }, 1000);
+    }
+
+    function updateCooldownUI() {
+      const fill = document.getElementById('cooldown-progress');
+      const text = document.getElementById('cooldown-timer-text');
+      const timerVal = document.getElementById('cooldown-timer-val');
+      
+      if (cooldownTimer > 0) {
+        const percent = (cooldownTimer / cooldownTotal) * 100;
+        fill.style.width = `${percent}%`;
+        text.textContent = 'Enfriamiento activo';
+        timerVal.textContent = `${cooldownTimer}s`;
+        timerVal.style.color = 'var(--color-warning)';
+        
+        document.getElementById('btn-scale-up').disabled = true;
+        document.getElementById('btn-scale-down').disabled = true;
+      } else {
+        fill.style.width = '0%';
+        text.textContent = 'Disponible';
+        timerVal.textContent = 'Listo';
+        timerVal.style.color = 'var(--color-success)';
+      }
+    }
+
+    // Consultar Métricas al Backend de Node.js
+    async function fetchMetrics() {
+      try {
+        const response = await fetch('/api/metrics');
+        if (!response.ok) throw new Error('Network error');
+        
+        const data = await response.json();
+        
+        // Actualizar Valores de Tarjetas
+        // data.cpu_usage viene de Prometheus (consulta por el motor) en "% por nucleo"
+        // → normalizar a % del host (divide entre cpu_cores) para escala 0-100% veraz.
+        const cpuCoresHost = data.cpu_cores || 1;
+        const cpuUsageHost = Math.min(100, (data.cpu_usage || 0) / cpuCoresHost);
+        document.getElementById('metrics-replicas').innerHTML = `${data.replicas} <span class="card-unit">/ ${data.max}</span>`;
+        document.getElementById('metrics-cpu').innerHTML = `${cpuUsageHost.toFixed(1)}<span class="card-unit">%</span>`;
+        document.getElementById('metrics-traffic').innerHTML = `${data.traffic_rate_kb.toFixed(2)} <span class="card-unit">KB/s</span>`;
+        
+        // Actualizar Detalles de Configuración
+        document.getElementById('config-min-replicas').textContent = data.min;
+        document.getElementById('config-max-replicas').textContent = data.max;
+        document.getElementById('config-scale-up').textContent = data.scale_up_by;
+        document.getElementById('config-scale-down').textContent = data.scale_down_by;
+        
+        // Manejar el Cooldown desde la API
+        if (data.cooldown_remaining > 0) {
+          if (cooldownTimer === 0 || Math.abs(cooldownTimer - data.cooldown_remaining) > 2) {
+            startClientCooldown(data.cooldown_remaining, data.cooldown_seconds);
+          }
+        } else {
+          cooldownTimer = 0;
+          updateCooldownUI();
+          
+          // Habilitar/Deshabilitar botones según límites de escala
+          document.getElementById('btn-scale-up').disabled = (data.replicas >= data.max);
+          document.getElementById('btn-scale-down').disabled = (data.replicas <= data.min);
+        }
+
+        // Estado del Badge de Alertas
+        const badge = document.getElementById('system-status-badge');
+        if (data.alert_status === "firing") {
+          badge.textContent = "API Sobrecargada";
+          badge.className = "status-badge firing";
+        } else {
+          badge.textContent = "Sistema Estable";
+          badge.className = "status-badge";
+        }
+
+        // Helper para parsear Red I/O ("1.2kB / 5.4kB")
+        function parseNetwork(netStr) {
+          const parts = netStr.split("/");
+          if (parts.length < 2) return { rx: 0, tx: 0, rxStr: "0B", txStr: "0B" };
+          const rxStr = parts[0].trim();
+          const txStr = parts[1].trim();
+          
+          function toBytes(str) {
+            const val = parseFloat(str) || 0;
+            if (str.includes("GB") || str.includes("gB")) return val * 1073741824;
+            if (str.includes("MB") || str.includes("mB")) return val * 1048576;
+            if (str.includes("kB") || str.includes("KB") || str.includes("kb")) return val * 1024;
+            return val;
+          }
+          return { rx: toBytes(rxStr), tx: toBytes(txStr), rxStr, txStr };
+        }
+
+        // Renderizar barra gráfica de red
+        function renderNetBar(netStr) {
+          const net = parseNetwork(netStr);
+          const maxBytes = 1048576; // 1 MB de escala de referencia visual
+          const rxPct = Math.min(100, (net.rx / maxBytes) * 100);
+          const txPct = Math.min(100, (net.tx / maxBytes) * 100);
+          
+          return `
+            <div class="net-bar-container">
+              <div class="net-bar-row">
+                <span class="net-bar-label">IN</span>
+                <div class="net-bar-bg"><div class="net-bar-fill rx" style="width: ${rxPct}%"></div></div>
+                <span class="net-bar-value">${net.rxStr}</span>
+              </div>
+              <div class="net-bar-row">
+                <span class="net-bar-label">OUT</span>
+                <div class="net-bar-bg"><div class="net-bar-fill tx" style="width: ${txPct}%"></div></div>
+                <span class="net-bar-value">${net.txStr}</span>
+              </div>
+            </div>
+          `;
+        }
+
+        // Nombres amigables para los módulos
+        function getFriendlyName(technicalName) {
+          if (technicalName.startsWith("hightraffic_api")) {
+            const replicaId = technicalName.split('.')[1] || '?';
+            return `API Réplica #${replicaId}`;
+          }
+          if (technicalName.startsWith("hightraffic_autoscaler")) return "Autoscaler";
+          if (technicalName.startsWith("hightraffic_telegraf")) return "Telegraf";
+          if (technicalName.startsWith("hightraffic_traefik")) return "Traefik";
+          if (technicalName.startsWith("hightraffic_redis")) return "Redis";
+          if (technicalName.startsWith("hightraffic_rabbitmq")) return "RabbitMQ";
+          if (technicalName.startsWith("hightraffic_prometheus")) return "Prometheus";
+          if (technicalName.startsWith("hightraffic_alertmanager")) return "Alertmanager";
+          return technicalName.split('.')[0] || technicalName;
+        }
+
+        // Helper para parsear memoria ("38.12MiB / 7.78GiB")
+        function parseMemory(memStr) {
+          const parts = memStr.split("/");
+          const usedStr = parts[0].trim();
+          const val = parseFloat(usedStr) || 0;
+          let bytes = val;
+          if (usedStr.includes("GiB") || usedStr.includes("GB") || usedStr.includes("gb")) bytes = val * 1073741824;
+          else if (usedStr.includes("MiB") || usedStr.includes("MB") || usedStr.includes("mb") || usedStr.includes("mB")) bytes = val * 1048576;
+          else if (usedStr.includes("KiB") || usedStr.includes("KB") || usedStr.includes("kb")) bytes = val * 1024;
+          return { bytes, str: usedStr };
+        }
+
+        // ─── Renderizar Contenedores Activos (APIs vs Sistema) ───
+        const apiCardsGrid = document.getElementById('api-cards-grid');
+        const systemCardsGrid = document.getElementById('system-cards-grid');
+        
+        // Orden de prioridad para módulos de sistema
+        const SYSTEM_ORDER = ['traefik', 'rabbitmq', 'telegraf', 'autoscaler', 'prometheus', 'redis', 'alertmanager'];
+        function getSystemPriority(name) {
+          const idx = SYSTEM_ORDER.findIndex(key => name.includes(key));
+          return idx === -1 ? 99 : idx;
+        }
+
+        if (Array.isArray(data.containers) && data.containers.length > 0) {
+          hasRenderedContainers = true;
+          const apis = data.containers
+            .filter(c => c.name.includes("hightraffic_api."))
+            .sort((a, b) => {
+              // Ordenar numéricamente por el índice de réplica (ej. hightraffic_api.3.xxx → 3)
+              const idxA = parseInt(a.name.split('.')[1]) || 0;
+              const idxB = parseInt(b.name.split('.')[1]) || 0;
+              return idxA - idxB;
+            });
+
+          const system = data.containers
+            .filter(c => !c.name.includes("hightraffic_api."))
+            .sort((a, b) => getSystemPriority(a.name) - getSystemPriority(b.name));
+          
+          if (apis.length > 0) {
+            apiCardsGrid.innerHTML = apis.map(c => {
+              // docker stats reporta CPU como "% por nucleo"; normalizar al host.
+              const cpuHostPct = Math.min(100, (parseFloat(c.cpu) || 0) / (data.cpu_cores || 1));
+              const cpuPct = cpuHostPct;
+              const mem = parseMemory(c.memory);
+              const memPct = Math.min(100, (mem.bytes / 134217728) * 100); // 128MB como límite visual
+              const friendlyName = getFriendlyName(c.name);
+              
+              return `
+                <div class="replica-card">
+                  <div class="replica-card-header">
+                    <span class="replica-name">
+                      <a href="#" class="container-detail-link" onclick="showContainerDetail('${c.name}', '${c.fullId}', '${c.image}'); return false;">
+                        ⚡ ${friendlyName}
+                      </a>
+                    </span>
+                    <span class="badge-running">Active</span>
+                  </div>
+                  <div class="replica-card-body">
+                    <!-- CPU Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header">
+                        <span>CPU</span>
+                        <span class="replica-metric-val">${cpuHostPct.toFixed(1)}%</span>
+                      </div>
+                      <div class="metric-bar-bg">
+                        <div class="metric-bar-fill cpu" style="width: ${cpuPct}%"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Memory Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header">
+                        <span>MEMORIA (Ref. 128MB)</span>
+                        <span class="replica-metric-val">${mem.str}</span>
+                      </div>
+                      <div class="metric-bar-bg">
+                        <div class="metric-bar-fill memory" style="width: ${memPct}%"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Network Metric (Dual Bar) -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header" style="margin-bottom: 0.25rem;">
+                        <span>TRÁNSITO RED I/O</span>
+                      </div>
+                      ${renderNetBar(c.net)}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          } else {
+            apiCardsGrid.innerHTML = `<div class="alert-empty">No hay réplicas de API en ejecución</div>`;
+          }
+          
+          if (system.length > 0) {
+            systemCardsGrid.innerHTML = system.map(c => {
+              // docker stats reporta CPU como "% por nucleo"; normalizar al host.
+              const cpuHostPct = Math.min(100, (parseFloat(c.cpu) || 0) / (data.cpu_cores || 1));
+              const cpuPct = cpuHostPct;
+              const mem = parseMemory(c.memory);
+              
+              let limit = 134217728; // 128MB
+              if (c.name.includes("prometheus") || c.name.includes("rabbitmq")) {
+                limit = 268435456; // 256MB
+              } else if (c.name.includes("traefik")) {
+                limit = 2147483648; // 2GB
+              }
+              
+              const memPct = Math.min(100, (mem.bytes / limit) * 100);
+              const friendlyName = getFriendlyName(c.name);
+              
+              const limitLabel = limit >= 1073741824 ? `${limit / 1073741824}GB` : `${limit / 1048576}MB`;
+              
+              return `
+                <div class="replica-card">
+                  <div class="replica-card-header">
+                    <span class="replica-name">
+                      <a href="#" class="container-detail-link" onclick="showContainerDetail('${c.name}', '${c.fullId}', '${c.image}'); return false;">
+                        ⚙️ ${friendlyName}
+                      </a>
+                    </span>
+                    <span class="badge-running" style="background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border-color: rgba(255, 255, 255, 0.1);">System</span>
+                  </div>
+                  <div class="replica-card-body">
+                    <!-- CPU Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header">
+                        <span>CPU</span>
+                        <span class="replica-metric-val">${cpuHostPct.toFixed(1)}%</span>
+                      </div>
+                      <div class="metric-bar-bg">
+                        <div class="metric-bar-fill cpu" style="width: ${cpuPct}%"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Memory Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header">
+                        <span>MEMORIA (Ref. ${limitLabel})</span>
+                        <span class="replica-metric-val">${mem.str}</span>
+                      </div>
+                      <div class="metric-bar-bg">
+                        <div class="metric-bar-fill memory" style="width: ${memPct}%"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Network Metric -->
+                    <div class="replica-metric-row">
+                      <div class="replica-metric-header" style="margin-bottom: 0.25rem;">
+                        <span>TRÁNSITO RED I/O</span>
+                      </div>
+                      ${renderNetBar(c.net)}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          } else {
+            systemCardsGrid.innerHTML = `<div class="alert-empty">No hay módulos de sistema en ejecución</div>`;
+          }
+        } else {
+          // data.containers vacio transitorio (carga alta / restart): conservar
+          // el ultimo render valido en lugar de limpiar la grilla.
+          if (!hasRenderedContainers) {
+            apiCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
+            systemCardsGrid.innerHTML = `<div class="alert-empty">No se detectaron contenedores activos</div>`;
+          }
+        }
+
+        // ─── Renderizar Colas RabbitMQ ───
+        const queueList = document.getElementById('rabbitmq-queue-list');
+        if (Array.isArray(data.queues) && data.queues.length > 0) {
+          queueList.innerHTML = data.queues.map(q => `
+            <div class="queue-item">
+              <div class="queue-header">
+                <span class="queue-name">📥 ${q.name}</span>
+                <span class="badge-running" style="background: rgba(99, 102, 241, 0.1); color: var(--color-primary);">${q.messages} msgs</span>
+              </div>
+              <div class="queue-stats-mini">
+                <div>Ready: <span class="queue-stat-value">${q.messages_ready}</span></div>
+                <div>Unack: <span class="queue-stat-value">${q.messages_unacknowledged}</span></div>
+                <div>Entrada: <span class="queue-stat-value">${q.publish_rate.toFixed(1)}/s</span></div>
+                <div>Salida: <span class="queue-stat-value">${q.deliver_rate.toFixed(1)}/s</span></div>
+              </div>
+            </div>
+          `).join('');
+        } else {
+          queueList.innerHTML = `<div class="alert-empty">No hay colas de RabbitMQ activas</div>`;
+        }
+
+        // Helper para calcular hace cuanto tiempo
+        function timeAgo(dateString) {
+          const now = new Date();
+          const starts = new Date(dateString);
+          const diffMs = now - starts;
+          const diffSecs = Math.max(0, Math.floor(diffMs / 1000));
+          if (diffSecs < 60) return `hace ${diffSecs}s`;
+          const diffMins = Math.floor(diffSecs / 60);
+          if (diffMins < 60) return `hace ${diffMins}m`;
+          const diffHrs = Math.floor(diffMins / 60);
+          return `hace ${diffHrs}h`;
+        }
+
+        // Helper para formatear hora
+        function formatAlertTime(dateString) {
+          const date = new Date(dateString);
+          return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
+        }
+
+        // ─── Renderizar Feed de Alertas (Historial Acumulativo del Backend) ───
+        const alertList = document.getElementById('alertmanager-feed-list');
+        
+        if (Array.isArray(data.alerts) && data.alerts.length > 0) {
+          // Ordenar de más reciente a más antigua y mostrar solo las últimas 5
+          const sortedAlerts = [...data.alerts]
+            .sort((a, b) => new Date(b.startsAt) - new Date(a.startsAt))
+            .slice(0, 5);
+          alertList.innerHTML = sortedAlerts.map(a => {
+            const isCritical = a.severity === 'critical';
+            let statusBadge = '';
+            let cardClass = 'alert-item';
+            
+            if (a.resolved) {
+              statusBadge = `<span class="alert-badge resolved">Resuelta</span>`;
+              cardClass += ' resolved';
+            } else {
+              statusBadge = `<span class="alert-badge ${isCritical ? 'critical' : 'active'}">Activa</span>`;
+              if (isCritical) cardClass += ' critical';
+            }
+
+            const timeLabel = a.resolved
+              ? `Ok: ${formatAlertTime(a.resolvedAt)} (${timeAgo(a.resolvedAt)})`
+              : `${timeAgo(a.startsAt)}`;
+
+            return `
+              <div class="${cardClass}">
+                <div class="alert-item-header">
+                  <span>⚠️ ${a.name}</span>
+                  ${statusBadge}
+                </div>
+                <div class="alert-item-desc">${a.summary}</div>
+                <div class="alert-item-time">
+                  <span>Inicio: ${formatAlertTime(a.startsAt)}</span>
+                  <span style="font-weight: 500;">${timeLabel}</span>
+                </div>
+              </div>
+            `;
+          }).join('');
+        } else {
+          alertList.innerHTML = `<div class="alert-empty">No hay historial de alertas registrado</div>`;
+        }
+
+        // Actualizar Histórico del Gráfico
+        cpuDataHistory.push(cpuUsageHost);
+        cpuDataHistory.shift();
+        
+        const now = new Date();
+        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+        chartLabels.push(timeStr);
+        chartLabels.shift();
+        
+        cpuChart.update();
+        
+      } catch (error) {
+        console.error('Error al obtener métricas:', error);
+        document.getElementById('system-status-badge').textContent = "Error de Conexión";
+        document.getElementById('system-status-badge').className = "status-badge firing";
+      }
+    }
+
+    // Trigger de Escalado Manual
+    async function triggerManualScale(direction) {
+      if (cooldownTimer > 0) return;
+      
+      const btnUp = document.getElementById('btn-scale-up');
+      const btnDown = document.getElementById('btn-scale-down');
+      
+      btnUp.disabled = true;
+      btnDown.disabled = true;
+      
+      try {
+        const response = await fetch(`/scale/${direction}`, { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.status === "scaled") {
+          fetchMetrics();
+        } else if (result.status === "cooldown") {
+          fetchMetrics();
+        } else {
+          alert(`Acción no realizada: ${result.status}`);
+          fetchMetrics();
+        }
+      } catch (err) {
+        console.error("Fallo al disparar escalado manual:", err);
+        fetchMetrics();
+      }
+    }
+
+    // Modal de Detalles de Contenedor
+    function showContainerDetail(name, id, image) {
+      document.getElementById('modal-container-name').textContent = name;
+      document.getElementById('modal-container-id').textContent = id;
+      document.getElementById('modal-container-image').textContent = image;
+      document.getElementById('container-modal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('container-modal').classList.remove('active');
+    }
+
+    // Intervalo de Actualización de Métricas (Cada 3 segundos)
+    fetchMetrics();
+    setInterval(fetchMetrics, 3000);
+  </script>
+
+  <!-- Container Detail Modal -->
+  <div id="container-modal" class="modal-overlay" onclick="closeModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="modal-container-title">Detalles del Contenedor</h3>
+        <button class="modal-close-btn" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-detail-row">
+          <span class="modal-detail-label">Nombre Técnico (Swarm):</span>
+          <span class="modal-detail-value" id="modal-container-name">-</span>
+        </div>
+        <div class="modal-detail-row">
+          <span class="modal-detail-label">ID de Contenedor:</span>
+          <span class="modal-detail-value" id="modal-container-id" style="font-family: monospace; font-size: 0.85rem; word-break: break-all;">-</span>
+        </div>
+        <div class="modal-detail-row">
+          <span class="modal-detail-label">Imagen del Contenedor:</span>
+          <span class="modal-detail-value" id="modal-container-image" style="font-family: monospace; font-size: 0.85rem; word-break: break-all;">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
