@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+# SwarmAutoscaler consulta Prometheus directamente (polling por servicio),
+# por lo que no se usan reglas de alerta ni Alertmanager para la decision de
+# escalado. Prometheus aqui actua solo como backend de metricas.
+# Si quieres notificaciones humanas, puedes volver a anadir rule_files +
+# alerting hacia un Alertmanager opcional.
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "telegraf"
+    dns_sd_configs:
+      - names:
+          - "tasks.telegraf"
+        type: "A"
+        port: 9273

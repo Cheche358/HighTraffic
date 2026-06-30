@@ -1,0 +1,74 @@
+# =============================================================================
+# Demo API — "HighTraffic" (aplicacion de referencia para SwarmAutoscaler)
+# Despliega la app demo (Traefik + Redis + RabbitMQ + API replicada).
+# El servicio `api` lleva las labels de SwarmAutoscaler para que el motor lo
+# descubra y lo gestione. Despliega este stack PRIMERO (crea la red ht_net).
+#
+#   docker network create --driver overlay --attachable ht_net   # solo la 1ra vez
+#   docker stack deploy -c examples/demo-api/docker-compose.yml hightraffic
+# =============================================================================
+
+services:
+  # 1. Reverse Proxy & Load Balancer (Exclusivo en Manager)
+  traefik:
+    image: traefik:v2.11
+    ports:
+      - "80:80"
+      - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  # 2. Cache Distribuida
+  redis:
+    image: redis:7-alpine
+
+  # 3. Cola de Mensajeria
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "15672:15672"
+
+  # 4. API / Workers (Despliegue Replicado) — servicio gestionado por SwarmAutoscaler
+  api:
+    image: hightraffic-api:latest
+    build: ./app
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      - redis
+      - rabbitmq
+    deploy:
+      replicas: ${API_REPLICAS:-3}
+      update_config:
+        parallelism: 2
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+      labels:
+        # Ruteo Traefik
+        - "traefik.enable=true"
+        - "traefik.http.routers.api.rule=PathPrefix(`/`)"
+        - "traefik.http.services.api.loadbalancer.server.port=3000"
+        # ===== Politicas de SwarmAutoscaler (discovery por labels) =====
+        - "swarm-autoscaler.enable=true"
+        - "swarm-autoscaler.min=${API_REPLICAS_MIN:-3}"
+        - "swarm-autoscaler.max=${API_REPLICAS_MAX:-10}"
+        - "swarm-autoscaler.step-up=${SCALE_UP_BY:-2}"
+        - "swarm-autoscaler.step-down=${SCALE_DOWN_BY:-1}"
+        - "swarm-autoscaler.cooldown=${SCALE_COOLDOWN:-90}"
+        - "swarm-autoscaler.metric=cpu"
+        - "swarm-autoscaler.threshold-up=${SCALE_CPU_UP:-70}"
+        - "swarm-autoscaler.threshold-down=${SCALE_CPU_DOWN:-25}"
+        - "swarm-autoscaler.window=30s"
+
+networks:
+  default:
+    name: ht_net
+    driver: overlay

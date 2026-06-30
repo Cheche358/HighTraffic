@@ -1,0 +1,65 @@
+# =============================================================================
+# SwarmAutoscaler — Engine Overlay (drop-in)
+# Despliega SOLO el motor de autoescalado sobre un Swarm existente.
+# Requiere que la red `ht_net` ya exista (la crea el stack de tu aplicacion).
+#
+#   docker stack deploy -c engine/docker-compose.engine.yml swarmautoscaler
+#
+# El motor descubre automaticamente los servicios que lleven la label
+# `swarm-autoscaler.enable=true` y aplica la politica definida en sus labels.
+# =============================================================================
+
+services:
+  # 1. Telegraf — recolector de metricas (consulta la API de Docker)
+  telegraf:
+    image: telegraf:1.32-alpine
+    user: root
+    entrypoint: ["telegraf"]
+    command: ["--config", "/etc/telegraf/telegraf.conf"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    deploy:
+      mode: global
+
+  # 2. Prometheus — backend de metricas (consultado por el autoscaler)
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  # 3. SwarmAutoscaler — discovery por labels + evaluacion de politicas
+  autoscaler:
+    image: swarmautoscaler:latest
+    build: ./autoscaler
+    ports:
+      - "9099:9099"
+    environment:
+      - SCALER_PORT=9099
+      - PROMETHEUS_URL=http://prometheus:9090
+      - DISCOVERY_LABEL=swarm-autoscaler.enable
+      - POLL_INTERVAL=10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+# Nota: Alertmanager se omitio del stack activo. En el modelo por polling el
+# autoscaler decide el escalado consultando Prometheus; Alertmanager solo seria
+# util para notificaciones humanas (Slack/email), y se puede anadir opcionalmente.
+
+networks:
+  default:
+    name: ht_net
+    external: true
